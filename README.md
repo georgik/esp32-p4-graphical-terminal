@@ -200,7 +200,15 @@ idf.py flash
 
 ## License
 
-MIT License
+MIT License (firmware and project).
+
+Font attribution:
+
+- **Anonymous Pro** — used for all terminal text. Bundled via the Raylib example assets and
+  vendored under `assets/fonts/`, it is © 2009-2010 Mark Simonson Studio and licensed under
+  the SIL Open Font License (OFL), version 1.1. The font is copied into the LittleFS
+  partition and loaded at runtime as a monospace (fixed-width) bitmap font, giving consistent
+  character widths like a *nix terminal.
 
 ## Links
 

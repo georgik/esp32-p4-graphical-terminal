@@ -133,31 +133,61 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
 /**
  * @brief Draw the main content area with UART lines
  */
-static void draw_content_area(int screenWidth, int screenHeight, const line_history_t *history, Font mono_font)
+static void draw_content_area(int screenWidth, int screenHeight, const line_history_t *history, Font mono_font,
+                               const char *echo_line, int echo_len, bool is_receiving)
 {
     // Content area: left half of screen (50%)
     int available_height = screenHeight - MARGIN_TOP - MARGIN_BOTTOM;
     int max_visible_lines = available_height / LINE_SPACING;
-
-    // Calculate which lines to show (always show the most recent)
-    int start_index = 0;
-    int lines_to_draw = history->line_count;
-    int start_y = MARGIN_TOP;
-
-    if (history->line_count >= max_visible_lines) {
-        // Buffer is full, show only the most recent lines
-        start_index = history->line_count - max_visible_lines;
-        lines_to_draw = max_visible_lines;
-    } else {
-        // Buffer not full, start drawing from bottom (terminal style)
-        start_y = MARGIN_TOP + (max_visible_lines - history->line_count) * LINE_SPACING;
+    if (max_visible_lines < 1) {
+        return;
     }
 
-    // Draw each visible line
-    for (int i = 0; i < lines_to_draw; i++) {
-        const char *line = get_line_from_history(history, start_index + i);
-        int y = start_y + (i * LINE_SPACING);
+    /* The bottom-most row is reserved for the current (being-typed) line, so the
+     * prompt/cursor sits at the bottom and output grows upward from it. */
+    int bottom_row = max_visible_lines - 1;
+    int committed_rows = bottom_row;
+
+    int char_w = (int)MeasureTextEx(mono_font, " ", FONT_SIZE, 0).x;
+    if (char_w < 1) char_w = 1;
+    int cursor_h = (int)MeasureTextEx(mono_font, "gqljp", FONT_SIZE, 0).y;
+
+    /* Draw committed output, anchored to the bottom of the committed area with the
+     * newest line just above the current one; older lines fall off the top. */
+    int start_row, draw_count, first_logical;
+    if (history->line_count > committed_rows) {
+        first_logical = history->line_count - committed_rows;
+        draw_count = committed_rows;
+        start_row = 0;
+    } else {
+        first_logical = 0;
+        draw_count = history->line_count;
+        start_row = committed_rows - history->line_count;
+    }
+
+    for (int i = 0; i < draw_count; i++) {
+        const char *line = get_line_from_history(history, first_logical + i);
+        int y = MARGIN_TOP + (start_row + i) * LINE_SPACING;
         DrawTextEx(mono_font, line, (Vector2){MARGIN_LEFT, y}, FONT_SIZE, 0, GREEN);
+    }
+
+    /* Current (echo) line, drawn on the bottom row. */
+    int echo_y = MARGIN_TOP + bottom_row * LINE_SPACING;
+    DrawTextEx(mono_font, echo_line, (Vector2){MARGIN_LEFT, echo_y}, FONT_SIZE, 0, GREEN);
+
+    /* Rectangle cursor at the position after the last echoed character. Solid while
+     * receiving, blinking otherwise. */
+    int cursor_x = MARGIN_LEFT + echo_len * char_w;
+    static float cursor_toggle = 0.f;
+    bool cursor_visible;
+    if (is_receiving) {
+        cursor_visible = true;
+    } else {
+        if (cursor_toggle == 0.f) cursor_toggle = GetTime();
+        cursor_visible = (((uint32_t)((GetTime() - cursor_toggle) * 2u)) % 2u) == 0;
+    }
+    if (cursor_visible) {
+        DrawRectangle(cursor_x, echo_y, char_w, cursor_h, WHITE);
     }
 }
 
@@ -584,6 +614,13 @@ void uart_monitor_display_task(void *pvParameter)
     uint32_t last_rx_count = 0;
     int frame_counter = 0;
     char temp_line[LINE_BUFFER_SIZE];
+    char echo_buf[LINE_BUFFER_SIZE];
+    int echo_len = 0;
+    int char_w = (int)MeasureTextEx(mono_font, " ", FONT_SIZE, 0).x;
+    if (char_w < 1) char_w = 1;
+    int echo_cap = (screenWidth - 2 * MARGIN_LEFT) / char_w;
+    if (echo_cap < 1) echo_cap = 1;
+    if (echo_cap > LINE_BUFFER_SIZE - 1) echo_cap = LINE_BUFFER_SIZE - 1;
     hp_core_state_t hp_state = HP_STATE_ACTIVE;  // Default to active state
 
     // Main display loop
@@ -609,10 +646,35 @@ void uart_monitor_display_task(void *pvParameter)
         }
 
         // Forward any keystrokes from the USB keyboard to the UART so the
-        // connected board sees what is typed (full duplex communication).
+        // connected board sees what is typed (full duplex communication),
+        // and echo them locally so the user can see what they type.
         char key;
         while (usb_keyboard_get_key(&key, 0)) {
             uart_monitor_send(&key, 1);
+
+            if (key == '\r' || key == '\n') {
+                // Enter: commit the current line to the log and start fresh.
+                if (echo_len > 0) {
+                    add_line_to_history(&history, echo_buf);
+                }
+                echo_len = 0;
+                echo_buf[0] = '\0';
+            } else if (key == '\b' || key == 0x7f) {
+                // Backspace: drop the last echoed character.
+                if (echo_len > 0) {
+                    echo_len--;
+                    echo_buf[echo_len] = '\0';
+                }
+            } else if (key >= 0x20 && key < 0x7f) {
+                // Printable: echo, wrapping to a new line when the row fills.
+                if (echo_len + 1 > echo_cap) {
+                    add_line_to_history(&history, echo_buf);
+                    echo_len = 0;
+                    echo_buf[0] = '\0';
+                }
+                echo_buf[echo_len++] = key;
+                echo_buf[echo_len] = '\0';
+            }
         }
 
         // Update receiving status (clear if no data for 10 frames)
@@ -631,7 +693,7 @@ void uart_monitor_display_task(void *pvParameter)
 
         // Draw UI elements
         draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE, mono_font);
-        draw_content_area(screenWidth, screenHeight, &history, mono_font);
+        draw_content_area(screenWidth, screenHeight, &history, mono_font, echo_buf, echo_len, is_receiving);
         draw_core_visualization(screenWidth, screenHeight, hp_state, hp_active_texture, hp_light_sleep_texture, hp_deep_sleep_texture, lp_core_texture);
         draw_bottom_bar(screenWidth, screenHeight, uart_monitor_is_receiving(), mono_font);
 
