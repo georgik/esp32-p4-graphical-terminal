@@ -651,6 +651,7 @@ void uart_monitor_display_task(void *pvParameter)
         char key;
         while (usb_keyboard_get_key(&key, 0)) {
             uart_monitor_send(&key, 1);
+            ESP_LOGI(TAG, "TX: %c", key);
 
             if (key == '\r' || key == '\n') {
                 // Enter: commit the current line to the log and start fresh.

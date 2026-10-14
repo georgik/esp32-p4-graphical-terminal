@@ -144,21 +144,32 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
     TickType_t start_tick = xTaskGetTickCount();
 
     while (1) {
-        /* Return a complete line already accumulated from a previous read. */
-        for (size_t i = 0; i < s_monitor->line_index; i++) {
+        /* If a complete line is already buffered, return it. A line ends on
+           '\r' or '\n'; a following '\n'/'\r' is part of the same break, so a
+           "\r\n" / "\n\r" pair yields exactly one line (no phantom empty line). */
+        size_t i = 0;
+        for (i = 0; i < s_monitor->line_index; i++) {
             if (s_monitor->line_buffer[i] == '\n' || s_monitor->line_buffer[i] == '\r') {
+                char term = s_monitor->line_buffer[i];
                 s_monitor->line_buffer[i] = '\0';
                 snprintf(buffer, max_len, "%s", s_monitor->line_buffer);
 
-                s_monitor->line_index -= (i + 1);
+                size_t skip = i + 1;
+                if (skip < s_monitor->line_index &&
+                    ((term == '\r' && s_monitor->line_buffer[skip] == '\n') ||
+                     (term == '\n' && s_monitor->line_buffer[skip] == '\r'))) {
+                    skip++;
+                }
+
+                s_monitor->line_index -= skip;
                 if (s_monitor->line_index > 0) {
-                    memmove(s_monitor->line_buffer, &s_monitor->line_buffer[i + 1], s_monitor->line_index);
+                    memmove(s_monitor->line_buffer, &s_monitor->line_buffer[skip], s_monitor->line_index);
                 }
                 return ESP_OK;
             }
         }
 
-        /* No complete line yet: grab the whole burst currently in the FIFO in one read. */
+        /* No complete line yet: grab the whole burst currently in the FIFO. */
         uint8_t chunk[512];
         size_t n_read = uart_read_bytes(s_monitor->uart_num, chunk, sizeof(chunk), pdMS_TO_TICKS(1));
 
@@ -168,13 +179,21 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
             if (byte == '\n' || byte == '\r') {
                 snprintf(buffer, max_len, "%s", s_monitor->line_buffer);
 
-                size_t tail = n_read - 1 - j;
-                size_t keep = tail;
+                /* Skip the second half of a "\r\n" / "\n\r" pair so it is not
+                   returned as a separate empty line. */
+                size_t tail_start = j + 1;
+                if (tail_start < n_read &&
+                    ((byte == '\r' && chunk[tail_start] == '\n') ||
+                     (byte == '\n' && chunk[tail_start] == '\r'))) {
+                    tail_start++;
+                }
+
+                size_t keep = n_read - tail_start;
                 if (keep > sizeof(s_monitor->line_buffer) - 1) {
                     keep = sizeof(s_monitor->line_buffer) - 1;
                 }
                 if (keep > 0) {
-                    memmove(s_monitor->line_buffer, &chunk[n_read - keep], keep);
+                    memmove(s_monitor->line_buffer, &chunk[tail_start], keep);
                 }
                 s_monitor->line_index = keep;
                 return ESP_OK;
@@ -184,8 +203,8 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
                 }
             } else if (byte == '\t') {
                 const char *spaces = "    ";
-                for (int i = 0; i < 4 && s_monitor->line_index < sizeof(s_monitor->line_buffer) - 1; i++) {
-                    s_monitor->line_buffer[s_monitor->line_index++] = spaces[i];
+                for (int k = 0; k < 4 && s_monitor->line_index < sizeof(s_monitor->line_buffer) - 1; k++) {
+                    s_monitor->line_buffer[s_monitor->line_index++] = spaces[k];
                 }
             } else if (byte >= 32 && byte < 127) {
                 if (s_monitor->line_index < sizeof(s_monitor->line_buffer) - 1) {
