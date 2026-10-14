@@ -1,0 +1,59 @@
+menu "Board Configuration"
+
+    choice BOARD_TYPE
+        prompt "Select Board"
+        default BOARD_ESP32_P4_FUNCTION_EV
+        help
+            Select the target board for this application.
+
+        config BOARD_ESP32_P4_FUNCTION_EV
+            bool "ESP32-P4 Function EV Board"
+            help
+                ESP32-P4 Function Evaluation Board with MIPI-DSI display (EK79007 1024x600).
+
+        config BOARD_CUSTOM
+            bool "Custom Board"
+            help
+                Custom board - you need to implement board_init_display() manually.
+
+    endchoice
+
+endmenu
+
+menu "UART Monitor Configuration"
+
+    config UART_MONITOR_BAUD_RATE
+        int "UART Baud Rate"
+        default 115200
+        help
+            Baud rate for UART communication (e.g., 9600, 57600, 115200, 230400).
+
+    config UART_MONITOR_TX_PIN
+        int "UART TX GPIO Pin"
+        default 21
+        help
+            GPIO pin for UART TX (transmits to external UART_RX).
+            ESP32-P4-Function-EV: GPIO21 (J1 pin 11, HP domain)
+
+    config UART_MONITOR_RX_PIN
+        int "UART RX GPIO Pin"
+        default 22
+        help
+            GPIO pin for UART RX (receives from external UART_TX).
+            ESP32-P4-Function-EV: GPIO22 (J1 pin 12, HP domain)
+
+    config UART_MONITOR_MAX_LINES
+        int "Maximum Display Lines"
+        default 45
+        range 5 100
+        help
+            Maximum number of lines to store and display in the history buffer.
+
+    config UART_MONITOR_LINE_LENGTH
+        int "Maximum Line Length"
+        default 100
+        range 20 150
+        help
+            Maximum number of characters per line before wrapping/truncating.
+
+endmenu

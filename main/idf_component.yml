@@ -1,0 +1,12 @@
+dependencies:
+  espressif/esp32_p4_function_ev_board_noglib: "*"
+  georgik/esp_raylib_port:
+    version: '*'
+  georgik/raylib:
+    version: '*'
+  joltwallet/littlefs: "==1.20.4"
+  # USB HID host: read keystrokes from a plugged-in USB keyboard
+  espressif/usb: "*"
+  espressif/usb_host_hid: "*"
+  idf:
+    version: '>=5.1.0'
