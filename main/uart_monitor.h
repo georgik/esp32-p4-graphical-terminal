@@ -115,6 +115,27 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
 bool uart_monitor_data_available(void);
 
 /**
+ * @brief Check whether an unterminated line is still buffered over RX
+ *
+ * Data that has arrived but has no terminating newline yet (e.g. a shell
+ * prompt/PS1) stays in the line buffer until the next terminator. This lets the
+ * caller decide whether a short blocking read would flush a pending line.
+ *
+ * @return true if a pending (unterminated) line exists, false otherwise
+ */
+bool uart_monitor_has_pending_line(void);
+
+/**
+ * @brief Copy the current unterminated line (e.g. a shell prompt/PS1 or the
+ * echoed command being built) into a caller buffer without consuming it.
+ *
+ * @param buffer Destination buffer
+ * @param max_len Size of the destination buffer
+ * @return true if a pending line was copied, false if none / on error
+ */
+bool uart_monitor_get_pending_line(char *buffer, size_t max_len);
+
+/**
  * @brief Send data to UART (TX)
  *
  * @param data Data to send

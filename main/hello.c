@@ -101,6 +101,24 @@ static hp_core_state_t parse_hp_state(const char *message)
 }
 
 /**
+ * @brief Handle one fully received UART line: append to history, log it, and
+ * propagate any HP/LP core state change.
+ */
+static void handle_rx_line(line_history_t *history, char *line, hp_core_state_t *hp_state)
+{
+    add_line_to_history(history, line);
+    ESP_LOGI(TAG, "RX: %s", line);
+
+    hp_core_state_t new_state = parse_hp_state(line);
+    if (new_state != HP_STATE_ACTIVE ||
+        strstr(line, "HP_ACTIVE") != NULL ||
+        strstr(line, "HP_LIGHT_SLEEP") != NULL ||
+        strstr(line, "HP_DEEP_SLEEP") != NULL) {
+        *hp_state = new_state;
+    }
+}
+
+/**
  * @brief Draw the status bar at the top
  */
 static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count, int baud_rate, Font mono_font)
@@ -134,7 +152,7 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
  * @brief Draw the main content area with UART lines
  */
 static void draw_content_area(int screenWidth, int screenHeight, const line_history_t *history, Font mono_font,
-                               const char *echo_line, int echo_len, bool is_receiving)
+                                const char *cur_line, int cur_len, bool is_receiving)
 {
     // Content area: left half of screen (50%)
     int available_height = screenHeight - MARGIN_TOP - MARGIN_BOTTOM;
@@ -171,13 +189,13 @@ static void draw_content_area(int screenWidth, int screenHeight, const line_hist
         DrawTextEx(mono_font, line, (Vector2){MARGIN_LEFT, y}, FONT_SIZE, 0, GREEN);
     }
 
-    /* Current (echo) line, drawn on the bottom row. */
+    /* Current (pending) line, drawn on the bottom row. */
     int echo_y = MARGIN_TOP + bottom_row * LINE_SPACING;
-    DrawTextEx(mono_font, echo_line, (Vector2){MARGIN_LEFT, echo_y}, FONT_SIZE, 0, GREEN);
+    DrawTextEx(mono_font, cur_line, (Vector2){MARGIN_LEFT, echo_y}, FONT_SIZE, 0, GREEN);
 
-    /* Rectangle cursor at the position after the last echoed character. Solid while
+    /* Rectangle cursor at the position after the last character. Solid while
      * receiving, blinking otherwise. */
-    int cursor_x = MARGIN_LEFT + echo_len * char_w;
+    int cursor_x = MARGIN_LEFT + cur_len * char_w;
     static float cursor_toggle = 0.f;
     bool cursor_visible;
     if (is_receiving) {
@@ -614,69 +632,34 @@ void uart_monitor_display_task(void *pvParameter)
     uint32_t last_rx_count = 0;
     int frame_counter = 0;
     char temp_line[LINE_BUFFER_SIZE];
-    char echo_buf[LINE_BUFFER_SIZE];
-    int echo_len = 0;
     int char_w = (int)MeasureTextEx(mono_font, " ", FONT_SIZE, 0).x;
     if (char_w < 1) char_w = 1;
-    int echo_cap = (screenWidth - 2 * MARGIN_LEFT) / char_w;
-    if (echo_cap < 1) echo_cap = 1;
-    if (echo_cap > LINE_BUFFER_SIZE - 1) echo_cap = LINE_BUFFER_SIZE - 1;
     hp_core_state_t hp_state = HP_STATE_ACTIVE;  // Default to active state
 
     // Main display loop
     while (!WindowShouldClose()) {
         bool got_any_line = false;
 
-        // Drain every line currently available (near-real-time: no per-line throttle,
-        // drain the whole burst then draw once).
+        // Drain every complete line (terminated by \r/\n) so it is drawn right away.
         while (uart_monitor_get_line(temp_line, sizeof(temp_line), 0) == ESP_OK) {
-            // Add line to history
-            add_line_to_history(&history, temp_line);
-            // Log to console
-            ESP_LOGI(TAG, "RX: %s", temp_line);
-
-            // Check for HP state change
-            hp_core_state_t new_state = parse_hp_state(temp_line);
-            if (new_state != HP_STATE_ACTIVE ||
-                strstr(temp_line, "HP_ACTIVE") != NULL ||
-                strstr(temp_line, "HP_LIGHT_SLEEP") != NULL ||
-                strstr(temp_line, "HP_DEEP_SLEEP") != NULL) {
-                hp_state = new_state;
-            }
+            handle_rx_line(&history, temp_line, &hp_state);
+            got_any_line = true;
         }
 
-        // Forward any keystrokes from the USB keyboard to the UART so the
-        // connected board sees what is typed (full duplex communication),
-        // and echo them locally so the user can see what they type.
+        // Forward keystrokes from the USB keyboard to the UART. The remote echoes
+        // input back over RX, so the typed command appears on screen there.
         char key;
         while (usb_keyboard_get_key(&key, 0)) {
             uart_monitor_send(&key, 1);
             ESP_LOGI(TAG, "TX: %c", key);
-
-            if (key == '\r' || key == '\n') {
-                // Enter: commit the current line to the log and start fresh.
-                if (echo_len > 0) {
-                    add_line_to_history(&history, echo_buf);
-                }
-                echo_len = 0;
-                echo_buf[0] = '\0';
-            } else if (key == '\b' || key == 0x7f) {
-                // Backspace: drop the last echoed character.
-                if (echo_len > 0) {
-                    echo_len--;
-                    echo_buf[echo_len] = '\0';
-                }
-            } else if (key >= 0x20 && key < 0x7f) {
-                // Printable: echo, wrapping to a new line when the row fills.
-                if (echo_len + 1 > echo_cap) {
-                    add_line_to_history(&history, echo_buf);
-                    echo_len = 0;
-                    echo_buf[0] = '\0';
-                }
-                echo_buf[echo_len++] = key;
-                echo_buf[echo_len] = '\0';
-            }
         }
+
+        // The shell prompt (PS1) and any echoed input arrive over RX without a
+        // trailing newline, so they sit in the line buffer until Enter terminates
+        // them. Show that pending line at the bottom row, with the cursor, so the
+        // prompt is always visible instead of being buffered.
+        char pending_line[LINE_BUFFER_SIZE];
+        uart_monitor_get_pending_line(pending_line, sizeof(pending_line));
 
         // Update receiving status (clear if no data for 10 frames)
         uint32_t current_rx_count = uart_monitor_get_rx_count();
@@ -694,7 +677,7 @@ void uart_monitor_display_task(void *pvParameter)
 
         // Draw UI elements
         draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE, mono_font);
-        draw_content_area(screenWidth, screenHeight, &history, mono_font, echo_buf, echo_len, is_receiving);
+        draw_content_area(screenWidth, screenHeight, &history, mono_font, pending_line, (int)strlen(pending_line), is_receiving);
         draw_core_visualization(screenWidth, screenHeight, hp_state, hp_active_texture, hp_light_sleep_texture, hp_deep_sleep_texture, lp_core_texture);
         draw_bottom_bar(screenWidth, screenHeight, uart_monitor_is_receiving(), mono_font);
 

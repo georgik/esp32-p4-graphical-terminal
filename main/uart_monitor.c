@@ -165,6 +165,7 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
                 if (s_monitor->line_index > 0) {
                     memmove(s_monitor->line_buffer, &s_monitor->line_buffer[skip], s_monitor->line_index);
                 }
+                s_monitor->line_buffer[s_monitor->line_index] = '\0';
                 return ESP_OK;
             }
         }
@@ -196,6 +197,7 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
                     memmove(s_monitor->line_buffer, &chunk[tail_start], keep);
                 }
                 s_monitor->line_index = keep;
+                s_monitor->line_buffer[s_monitor->line_index] = '\0';
                 return ESP_OK;
             } else if (byte == '\b' || byte == 0x7F) {
                 if (s_monitor->line_index > 0) {
@@ -206,9 +208,11 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
                 for (int k = 0; k < 4 && s_monitor->line_index < sizeof(s_monitor->line_buffer) - 1; k++) {
                     s_monitor->line_buffer[s_monitor->line_index++] = spaces[k];
                 }
+                s_monitor->line_buffer[s_monitor->line_index] = '\0';
             } else if (byte >= 32 && byte < 127) {
                 if (s_monitor->line_index < sizeof(s_monitor->line_buffer) - 1) {
                     s_monitor->line_buffer[s_monitor->line_index++] = (char)byte;
+                    s_monitor->line_buffer[s_monitor->line_index] = '\0';
                 }
             }
             /* Ignore other control characters. */
@@ -241,6 +245,30 @@ bool uart_monitor_data_available(void)
     size_t available;
     uart_get_buffered_data_len(s_monitor->uart_num, &available);
     return available > 0;
+}
+
+bool uart_monitor_has_pending_line(void)
+{
+    if (s_monitor == NULL) {
+        return false;
+    }
+
+    return s_monitor->line_index > 0;
+}
+
+bool uart_monitor_get_pending_line(char *buffer, size_t max_len)
+{
+    if (s_monitor == NULL || buffer == NULL || max_len == 0) {
+        return false;
+    }
+
+    if (s_monitor->line_index == 0) {
+        buffer[0] = '\0';
+        return false;
+    }
+
+    snprintf(buffer, max_len, "%s", s_monitor->line_buffer);
+    return true;
 }
 
 esp_err_t uart_monitor_send(const char *data, size_t len)
