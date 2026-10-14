@@ -103,19 +103,19 @@ static hp_core_state_t parse_hp_state(const char *message)
 /**
  * @brief Draw the status bar at the top
  */
-static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count, int baud_rate)
+static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count, int baud_rate, Font mono_font)
 {
     // Background
     DrawRectangle(0, 0, screenWidth, STATUS_BAR_HEIGHT, DARKBLUE);
 
     // Title
-    DrawText("P4 Graphical Terminal", MARGIN_LEFT, 5, 20, WHITE);
+    DrawTextEx(mono_font, "P4 Graphical Terminal", (Vector2){MARGIN_LEFT, 5}, 20, 0, WHITE);
 
     // Baud rate
     char baud_text[32];
     int baud_x = MARGIN_LEFT + 250;  // Position after title (adjusted for larger font)
     snprintf(baud_text, sizeof(baud_text), "%d baud", baud_rate);
-    DrawText(baud_text, baud_x, 5, 20, WHITE);
+    DrawTextEx(mono_font, baud_text, (Vector2){baud_x, 5}, 20, 0, WHITE);
 
     // RX count - position from right edge
     char count_text[32];
@@ -126,14 +126,14 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
     } else {
         snprintf(count_text, sizeof(count_text), "RX: %" PRIu32 "M", rx_count / 1000000);
     }
-    int count_width = MeasureText(count_text, 20);
-    DrawText(count_text, screenWidth - count_width - MARGIN_LEFT, 5, 20, YELLOW);
+    int count_width = (int)(MeasureTextEx(mono_font, count_text, 20, 0).x);
+    DrawTextEx(mono_font, count_text, (Vector2){screenWidth - count_width - MARGIN_LEFT, 5}, 20, 0, YELLOW);
 }
 
 /**
  * @brief Draw the main content area with UART lines
  */
-static void draw_content_area(int screenWidth, int screenHeight, const line_history_t *history)
+static void draw_content_area(int screenWidth, int screenHeight, const line_history_t *history, Font mono_font)
 {
     // Content area: left half of screen (50%)
     int available_height = screenHeight - MARGIN_TOP - MARGIN_BOTTOM;
@@ -157,14 +157,14 @@ static void draw_content_area(int screenWidth, int screenHeight, const line_hist
     for (int i = 0; i < lines_to_draw; i++) {
         const char *line = get_line_from_history(history, start_index + i);
         int y = start_y + (i * LINE_SPACING);
-        DrawText(line, MARGIN_LEFT, y, FONT_SIZE, GREEN);
+        DrawTextEx(mono_font, line, (Vector2){MARGIN_LEFT, y}, FONT_SIZE, 0, GREEN);
     }
 }
 
 /**
  * @brief Draw the bottom status bar
  */
-static void draw_bottom_bar(int screenWidth, int screenHeight, bool is_receiving)
+static void draw_bottom_bar(int screenWidth, int screenHeight, bool is_receiving, Font mono_font)
 {
     int y = screenHeight - BOTTOM_BAR_HEIGHT;
 
@@ -173,11 +173,11 @@ static void draw_bottom_bar(int screenWidth, int screenHeight, bool is_receiving
 
     // Status text - board-specific
 #ifdef CONFIG_BOARD_ESP32_P4_FUNCTION_EV
-    DrawText("Logs", MARGIN_LEFT, y + 5, 18, WHITE);
+    DrawTextEx(mono_font, "Logs", (Vector2){MARGIN_LEFT, y + 5}, 18, 0, WHITE);
 #elif CONFIG_BOARD_ESP_BOX_3
-    DrawText("Logs | Cores", MARGIN_LEFT, y + 5, 18, WHITE);
+    DrawTextEx(mono_font, "Logs | Cores", (Vector2){MARGIN_LEFT, y + 5}, 18, 0, WHITE);
 #else
-    DrawText("Logs | Cores", MARGIN_LEFT, y + 5, 18, WHITE);
+    DrawTextEx(mono_font, "Logs | Cores", (Vector2){MARGIN_LEFT, y + 5}, 18, 0, WHITE);
 #endif
 
     // RX indicator (blinking green circle)
@@ -332,7 +332,7 @@ static void draw_core_visualization(int screenWidth, int screenHeight, hp_core_s
 /**
  * @brief Draw startup screen
  */
-static void draw_startup_screen(int screenWidth, int screenHeight, int baud_rate, int rx_pin, int tx_pin)
+static void draw_startup_screen(int screenWidth, int screenHeight, int baud_rate, int rx_pin, int tx_pin, Font mono_font)
 {
     BeginDrawing();
     ClearBackground(BLACK);
@@ -340,8 +340,8 @@ static void draw_startup_screen(int screenWidth, int screenHeight, int baud_rate
     // Title - scale with screen size
     const char *title = "UART Monitor";
     int title_size = (screenWidth > 500) ? 100 : 30;  // 2x larger title for P4
-    int title_width = MeasureText(title, title_size);
-    DrawText(title, (screenWidth - title_width) / 2, 80, title_size, WHITE);
+    int title_width = (int)(MeasureTextEx(mono_font, title, title_size, 0).x);
+    DrawTextEx(mono_font, title, (Vector2){(screenWidth - title_width) / 2, 80}, title_size, 0, WHITE);
 
     // Configuration info
     char info[128];
@@ -349,36 +349,36 @@ static void draw_startup_screen(int screenWidth, int screenHeight, int baud_rate
     int font_size = (screenWidth > 500) ? 40 : 14;  // 2x larger font for P4
 
     snprintf(info, sizeof(info), "Baud Rate: %d", baud_rate);
-    DrawText(info, 80, y, font_size, WHITE);
+    DrawTextEx(mono_font, info, (Vector2){80, y}, font_size, 0, WHITE);
     y += (screenWidth > 500) ? 60 : 25;
 
     snprintf(info, sizeof(info), "RX Pin: GPIO%d", rx_pin);
-    DrawText(info, 80, y, font_size, WHITE);
+    DrawTextEx(mono_font, info, (Vector2){80, y}, font_size, 0, WHITE);
     y += (screenWidth > 500) ? 60 : 25;
 
     snprintf(info, sizeof(info), "TX Pin: GPIO%d", tx_pin);
-    DrawText(info, 80, y, font_size, WHITE);
+    DrawTextEx(mono_font, info, (Vector2){80, y}, font_size, 0, WHITE);
     y += (screenWidth > 500) ? 100 : 40;
 
     // Instructions - board-specific
-    DrawText("Waiting for data...", 80, y, font_size, YELLOW);
+    DrawTextEx(mono_font, "Waiting for data...", (Vector2){80, y}, font_size, 0, YELLOW);
     y += (screenWidth > 500) ? 80 : 30;
 
 #ifdef CONFIG_BOARD_ESP32_P4_FUNCTION_EV
-    DrawText("Connect ESP32-C6 LP_UART:", 80, y, 24, GRAY);
+    DrawTextEx(mono_font, "Connect ESP32-C6 LP_UART:", (Vector2){80, y}, 24, 0, GRAY);
     y += 40;
-    DrawText("C6 GPIO5 (TX) -> P4 GPIO22 (RX)", 80, y, 24, GRAY);
+    DrawTextEx(mono_font, "C6 GPIO5 (TX) -> P4 GPIO22 (RX)", (Vector2){80, y}, 24, 0, GRAY);
     y += 30;
-    DrawText("C6 GPIO4 (RX) <- P4 GPIO21 (TX)", 80, y, 24, GRAY);
+    DrawTextEx(mono_font, "C6 GPIO4 (RX) <- P4 GPIO21 (TX)", (Vector2){80, y}, 24, 0, GRAY);
     y += 30;
-    DrawText("GND -> GND", 80, y, 24, GRAY);
+    DrawTextEx(mono_font, "GND -> GND", (Vector2){80, y}, 24, 0, GRAY);
 #else
-    DrawText("Connect external UART:", 80, y, 24, GRAY);
+    DrawTextEx(mono_font, "Connect external UART:", (Vector2){80, y}, 24, 0, GRAY);
     y += 40;
     snprintf(info, sizeof(info), "External TX -> GPIO%d (RX)", rx_pin);
-    DrawText(info, 80, y, 24, GRAY);
+    DrawTextEx(mono_font, info, (Vector2){80, y}, 24, 0, GRAY);
     y += 30;
-    DrawText("GND -> GND", 80, y, 24, GRAY);
+    DrawTextEx(mono_font, "GND -> GND", (Vector2){80, y}, 24, 0, GRAY);
 #endif
 
     EndDrawing();
@@ -429,7 +429,7 @@ void uart_monitor_display_task(void *pvParameter)
 
     if (ret == ESP_OK) {
         // Load HP core ACTIVE state icon
-        const char *hp_active_path = "/littlefs/core-icon-active-512.png";
+        const char *hp_active_path = "/littlefs/png/core-icon-active-512.png";
         FILE *fp = fopen(hp_active_path, "r");
         if (fp) {
             fseek(fp, 0, SEEK_END);
@@ -457,7 +457,7 @@ void uart_monitor_display_task(void *pvParameter)
         }
 
         // Load HP core LIGHT SLEEP state icon
-        const char *hp_light_sleep_path = "/littlefs/core-icon-light-sleep-512.png";
+        const char *hp_light_sleep_path = "/littlefs/png/core-icon-light-sleep-512.png";
         fp = fopen(hp_light_sleep_path, "r");
         if (fp) {
             fseek(fp, 0, SEEK_END);
@@ -485,7 +485,7 @@ void uart_monitor_display_task(void *pvParameter)
         }
 
         // Load HP core DEEP SLEEP state icon
-        const char *hp_deep_sleep_path = "/littlefs/core-icon-deep-sleep-512.png";
+        const char *hp_deep_sleep_path = "/littlefs/png/core-icon-deep-sleep-512.png";
         fp = fopen(hp_deep_sleep_path, "r");
         if (fp) {
             fseek(fp, 0, SEEK_END);
@@ -513,7 +513,7 @@ void uart_monitor_display_task(void *pvParameter)
         }
 
         // Load LP core icon
-        const char *lp_png_path = "/littlefs/lp-core-icon-128.png";
+        const char *lp_png_path = "/littlefs/png/lp-core-icon-128.png";
         fp = fopen(lp_png_path, "r");
         if (fp) {
             fseek(fp, 0, SEEK_END);
@@ -544,9 +544,31 @@ void uart_monitor_display_task(void *pvParameter)
     ESP_LOGI(TAG, "UART Monitor Initialized. Starting main loop...");
     ESP_LOGI(TAG, "Screen dimensions: %dx%d", screenWidth, screenHeight);
 
+    /* Load the monospace (Anonymous Pro) font for terminal-style text.
+     * Falls back to Raylib's default font if the font is unavailable. */
+     Font mono_font = GetFontDefault();
+     bool mono_loaded = false;
+     {
+        const char *mono_path = "/littlefs/fonts/anonymous_pro_bold.ttf";
+        FILE *fp = fopen(mono_path, "r");
+        if (fp) {
+            fclose(fp);
+            Font loaded = LoadFontEx(mono_path, FONT_SIZE, NULL, 0);
+            if (loaded.glyphCount > 0) {
+                mono_font = loaded;
+                mono_loaded = true;
+                ESP_LOGI(TAG, "Anonymous Pro monospace font loaded");
+            } else {
+                ESP_LOGW(TAG, "Anonymous Pro font failed to rasterize, using default font");
+            }
+        } else {
+            ESP_LOGW(TAG, "Anonymous Pro font not found at %s, using default font", mono_path);
+        }
+     }
+
     // Show startup screen for 2 seconds
     draw_startup_screen(screenWidth, screenHeight, UART_MONITOR_BAUD_RATE,
-                       UART_MONITOR_RX_PIN, UART_MONITOR_TX_PIN);
+                        UART_MONITOR_RX_PIN, UART_MONITOR_TX_PIN, mono_font);
     vTaskDelay(pdMS_TO_TICKS(2000));
 
     // Initialize line history
@@ -608,10 +630,10 @@ void uart_monitor_display_task(void *pvParameter)
         ClearBackground(BLACK);
 
         // Draw UI elements
-        draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE);
-        draw_content_area(screenWidth, screenHeight, &history);
+        draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE, mono_font);
+        draw_content_area(screenWidth, screenHeight, &history, mono_font);
         draw_core_visualization(screenWidth, screenHeight, hp_state, hp_active_texture, hp_light_sleep_texture, hp_deep_sleep_texture, lp_core_texture);
-        draw_bottom_bar(screenWidth, screenHeight, uart_monitor_is_receiving());
+        draw_bottom_bar(screenWidth, screenHeight, uart_monitor_is_receiving(), mono_font);
 
         // End drawing
         EndDrawing();
@@ -642,6 +664,10 @@ void uart_monitor_display_task(void *pvParameter)
     }
     if (lp_core_texture.id != 0) {
         UnloadTexture(lp_core_texture);
+    }
+
+    if (mono_loaded) {
+        UnloadFont(mono_font);
     }
 
     uart_monitor_deinit();

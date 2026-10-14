@@ -16,4 +16,4 @@ idf_component_register(
 
 # Create LittleFS partition image from assets directory
 # The directory will be created by convert_assets.sh before building
-littlefs_create_partition_image(storage "${CMAKE_CURRENT_SOURCE_DIR}/../assets/png" FLASH_IN_PROJECT)
+littlefs_create_partition_image(storage "${CMAKE_CURRENT_SOURCE_DIR}/../assets" FLASH_IN_PROJECT)
