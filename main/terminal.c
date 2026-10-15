@@ -24,10 +24,19 @@
 #define CONTENT_GAP 2                // Black gap above content only
 #define FONT_SIZE 28
 #define LINE_SPACING 34
+#define TARGET_FPS 60                // Render-on-change cap (see improvement 04)
 #define MARGIN_LEFT 10
 #define MARGIN_RIGHT 10  // Leave this much free space at the right of a line
 #define MARGIN_TOP (STATUS_BAR_HEIGHT + CONTENT_GAP)  // Start below status bar with gap
 #define MARGIN_BOTTOM BOTTOM_BAR_HEIGHT  // Content goes right to bottom bar
+
+/* Cached font metrics. The monospace font has fixed advance/glyph sizes, so they
+ * are measured once at startup and reused instead of calling MeasureTextEx() per
+ * frame (see improvement 06). */
+typedef struct {
+    int char_w;   // fixed character advance (MeasureTextEx " ")
+    int char_h;   // glyph height            (MeasureTextEx "gqljp" .y)
+} FontMetrics;
 
 /* Line history buffer */
 typedef struct {
@@ -135,7 +144,9 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
     snprintf(baud_text, sizeof(baud_text), "%d baud", baud_rate);
     DrawTextEx(mono_font, baud_text, (Vector2){baud_x, 5}, 20, 0, WHITE);
 
-    // RX count - position from right edge
+    // RX count - position from right edge. The measured width is cached and only
+    // recomputed when the text actually changes, removing a per-frame MeasureTextEx
+    // from the hot loop (improvement 06).
     char count_text[32];
     if (rx_count < 1000) {
         snprintf(count_text, sizeof(count_text), "RX: %" PRIu32, rx_count);
@@ -144,7 +155,13 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
     } else {
         snprintf(count_text, sizeof(count_text), "RX: %" PRIu32 "M", rx_count / 1000000);
     }
-    int count_width = (int)(MeasureTextEx(mono_font, count_text, 20, 0).x);
+    static char last_count_text[32];
+    static int count_width;
+    if (strncmp(count_text, last_count_text, sizeof(last_count_text)) != 0) {
+        memcpy(last_count_text, count_text, sizeof(count_text));
+        last_count_text[sizeof(last_count_text) - 1] = '\0';
+        count_width = (int)(MeasureTextEx(mono_font, count_text, 20, 0).x);
+    }
     DrawTextEx(mono_font, count_text, (Vector2){screenWidth - count_width - MARGIN_LEFT, 5}, 20, 0, YELLOW);
 }
 
@@ -152,7 +169,7 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
  * @brief Draw the main content area with UART lines
  */
 static void draw_content_area(int screenWidth, int screenHeight, const line_history_t *history, Font mono_font,
-                                const char *cur_line, int cur_len, bool is_receiving)
+                                const char *cur_line, int cur_len, bool is_receiving, const FontMetrics *m)
 {
     // Content area: left half of screen (50%)
     int available_height = screenHeight - MARGIN_TOP - MARGIN_BOTTOM;
@@ -166,9 +183,8 @@ static void draw_content_area(int screenWidth, int screenHeight, const line_hist
     int bottom_row = max_visible_lines - 1;
     int committed_rows = bottom_row;
 
-    int char_w = (int)MeasureTextEx(mono_font, " ", FONT_SIZE, 0).x;
-    if (char_w < 1) char_w = 1;
-    int cursor_h = (int)MeasureTextEx(mono_font, "gqljp", FONT_SIZE, 0).y;
+    int char_w = m->char_w;
+    int cursor_h = m->char_h;
 
     // Characters that fit on a single row; lines wider than this wrap onto the
     // next row like a normal terminal instead of running off the right edge.
@@ -636,6 +652,13 @@ void uart_monitor_display_task(void *pvParameter)
         }
      }
 
+    // Measure font metrics once; the monospace font has fixed advance/glyph
+    // sizes, so these are reused everywhere instead of MeasureTextEx() per frame.
+    FontMetrics metrics;
+    metrics.char_w = (int)MeasureTextEx(mono_font, " ", FONT_SIZE, 0).x;
+    if (metrics.char_w < 1) metrics.char_w = 1;
+    metrics.char_h = (int)MeasureTextEx(mono_font, "gqljp", FONT_SIZE, 0).y;
+
     // Show startup screen for 2 seconds
     draw_startup_screen(screenWidth, screenHeight, UART_MONITOR_BAUD_RATE,
                         UART_MONITOR_RX_PIN, UART_MONITOR_TX_PIN, mono_font);
@@ -654,13 +677,16 @@ void uart_monitor_display_task(void *pvParameter)
     uint32_t last_rx_count = 0;
     int frame_counter = 0;
     char temp_line[LINE_BUFFER_SIZE];
-    int char_w = (int)MeasureTextEx(mono_font, " ", FONT_SIZE, 0).x;
-    if (char_w < 1) char_w = 1;
+    int last_pending_len = -1;
+    TickType_t s_next_wakeup = 0;
+    TickType_t frame_period = pdMS_TO_TICKS(1000 / TARGET_FPS);
+    bool key_pressed;
     hp_core_state_t hp_state = HP_STATE_ACTIVE;  // Default to active state
 
     // Main display loop
     while (!WindowShouldClose()) {
         bool got_any_line = false;
+        key_pressed = false;
 
         // Drain every complete line (terminated by \r/\n) so it is drawn right away.
         while (uart_monitor_get_line(temp_line, sizeof(temp_line), 0) == ESP_OK) {
@@ -672,6 +698,7 @@ void uart_monitor_display_task(void *pvParameter)
         // input back over RX, so the typed command appears on screen there.
         char key;
         while (usb_keyboard_get_key(&key, 0)) {
+            key_pressed = true;
             uint8_t k = (uint8_t)key;
             /* Control bytes are invisible, so name them explicitly to make it clear
                they were received and forwarded (e.g. <BS> backspace, <ETX> Ctrl+C).
@@ -702,6 +729,8 @@ void uart_monitor_display_task(void *pvParameter)
         // prompt is always visible instead of being buffered.
         char pending_line[LINE_BUFFER_SIZE];
         uart_monitor_get_pending_line(pending_line, sizeof(pending_line));
+        bool pending_changed = ((int)strlen(pending_line) != last_pending_len);
+        last_pending_len = (int)strlen(pending_line);
 
         // Update receiving status (clear if no data for 10 frames)
         uint32_t current_rx_count = uart_monitor_get_rx_count();
@@ -711,7 +740,27 @@ void uart_monitor_display_task(void *pvParameter)
         }
         last_rx_count = current_rx_count;
 
-        // Begin drawing
+        // Decide whether the visible screen changed this cycle. Redraw only on
+        // change so the display task does not spin at ~1000 fps while streaming
+        // (see improvement 04); the frame rate is still capped below regardless.
+        bool need_draw = got_any_line || key_pressed
+                         || (current_rx_count != last_rx_count)
+                         || pending_changed;
+
+        // The only thing that must refresh while idle is the blinking cursor:
+        // force a redraw every ~500 ms so the prompt keeps animating.
+        static TickType_t s_last_blink = 0;
+        bool idle_blink = (xTaskGetTickCount() - s_last_blink) >= pdMS_TO_TICKS(500);
+        if (idle_blink) s_last_blink = xTaskGetTickCount();
+
+        if (!need_draw && !idle_blink) {
+            // Nothing visible changed: sleep briefly and re-check instead of
+            // burning CPU. New data is picked up by the drain at the top of the loop.
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        // Draw the (changed) frame.
         BeginDrawing();
 
         // Clear background
@@ -719,7 +768,7 @@ void uart_monitor_display_task(void *pvParameter)
 
         // Draw UI elements
         draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE, mono_font);
-        draw_content_area(screenWidth, screenHeight, &history, mono_font, pending_line, (int)strlen(pending_line), is_receiving);
+        draw_content_area(screenWidth, screenHeight, &history, mono_font, pending_line, (int)strlen(pending_line), is_receiving, &metrics);
         draw_core_visualization(screenWidth, screenHeight, hp_state, hp_active_texture, hp_light_sleep_texture, hp_deep_sleep_texture, lp_core_texture);
         draw_bottom_bar(screenWidth, screenHeight, uart_monitor_is_receiving(), mono_font);
 
@@ -728,13 +777,12 @@ void uart_monitor_display_task(void *pvParameter)
 
         frame_counter++;
 
-        // Adaptive delay: yield briefly after drawing new data so the next burst is
-        // captured promptly, block a little longer when idle to save CPU.
-        if (got_any_line) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
+        // Cap the frame rate to avoid the render storm: wake at most every
+        // frame_period, even if new data keeps arriving.
+        TickType_t cap_now = xTaskGetTickCount();
+        if (cap_now >= s_next_wakeup) s_next_wakeup = cap_now + frame_period;
+        TickType_t wait = s_next_wakeup - xTaskGetTickCount();
+        if (wait > 0) vTaskDelay(wait);
     }
 
     // De-initialize (never reached in embedded mode)
