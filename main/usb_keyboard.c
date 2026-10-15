@@ -53,10 +53,18 @@ static uint8_t s_prev_keys[HID_KEYBOARD_KEY_MAX] = { 0 };
  *
  * @param key     HID usage code (e.g. HID_KEY_A)
  * @param shift   True when a shift modifier is pressed
+ * @param ctrl    True when a control modifier is pressed
  * @return ASCII character, or 0 when the key has no associated character
  */
-static char hid_key_to_ascii(uint8_t key, bool shift)
+static char hid_key_to_ascii(uint8_t key, bool shift, bool ctrl)
 {
+    /* Ctrl + letter => the 0x00-0x1F control code (e.g. Ctrl+C => 0x03 ETX). The
+       Linux console on the other end treats these as signals/commands: ETX
+       interrupts the running job, EOF terminates input, etc. */
+    if (ctrl && key >= HID_KEY_A && key <= HID_KEY_Z) {
+        return (char)(('a' + (key - HID_KEY_A)) & 0x1F);
+    }
+
     switch (key) {
     case HID_KEY_A:  return shift ? 'A' : 'a';
     case HID_KEY_B:  return shift ? 'B' : 'b';
@@ -136,6 +144,7 @@ static bool key_present_in_report(const uint8_t *report, uint8_t key)
 static void keyboard_report_process(const hid_keyboard_input_report_boot_t *report)
 {
     bool shift = (report->modifier.val & (HID_LEFT_SHIFT | HID_RIGHT_SHIFT)) != 0;
+    bool ctrl = (report->modifier.val & (HID_LEFT_CONTROL | HID_RIGHT_CONTROL)) != 0;
 
     for (int i = 0; i < HID_KEYBOARD_KEY_MAX; i++) {
         uint8_t released = s_prev_keys[i];
@@ -148,7 +157,7 @@ static void keyboard_report_process(const hid_keyboard_input_report_boot_t *repo
 
         /* A newly pressed key -> emit its character. */
         if (pressed > HID_KEY_ERROR_UNDEFINED && !key_present_in_report(s_prev_keys, pressed)) {
-            char c = hid_key_to_ascii(pressed, shift);
+            char c = hid_key_to_ascii(pressed, shift, ctrl);
             if (c != 0 && s_key_queue != NULL) {
                 xQueueSend(s_key_queue, &c, 0);
                 ESP_LOGV(TAG, "report_process: key '%c'(%d) enqueued", c, (int)c);

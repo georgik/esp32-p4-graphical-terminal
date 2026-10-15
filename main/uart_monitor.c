@@ -23,6 +23,11 @@ typedef struct uart_monitor_s {
     bool is_receiving;
     char line_buffer[512];          // Accumulated line buffer (may span multiple reads)
     size_t line_index;
+    /* ANSI escape-state machine. Used to discard CSI sequences (e.g. the
+       ESC[J / ESC[3~ bracketed-key echoes some remote terminals send back when
+       a key is pressed) so they never reach the displayed text.
+       0 = idle, 1 = ESC seen, 2 = ESC[ seen (inside CSI). */
+    uint8_t esc_state;
 } uart_monitor_t;
 
 static uart_monitor_t *s_monitor = NULL;
@@ -153,6 +158,7 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
                 char term = s_monitor->line_buffer[i];
                 s_monitor->line_buffer[i] = '\0';
                 snprintf(buffer, max_len, "%s", s_monitor->line_buffer);
+                s_monitor->esc_state = 0;
 
                 size_t skip = i + 1;
                 if (skip < s_monitor->line_index &&
@@ -179,6 +185,7 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
 
             if (byte == '\n' || byte == '\r') {
                 snprintf(buffer, max_len, "%s", s_monitor->line_buffer);
+                s_monitor->esc_state = 0;
 
                 /* Skip the second half of a "\r\n" / "\n\r" pair so it is not
                    returned as a separate empty line. */
@@ -199,9 +206,26 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
                 s_monitor->line_index = keep;
                 s_monitor->line_buffer[s_monitor->line_index] = '\0';
                 return ESP_OK;
+            } else if (s_monitor->esc_state == 1) {
+                /* ESC seen: a CSI sequence starts with '['; anything else is a
+                   short escape that we simply drop. */
+                s_monitor->esc_state = (byte == '[') ? 2 : 0;
+            } else if (s_monitor->esc_state == 2) {
+                /* Inside CSI: skip parameter/intermediate bytes and stop at the
+                   final byte (0x40-0x7E), which is also consumed. */
+                if (byte >= 0x40 && byte <= 0x7E) {
+                    s_monitor->esc_state = 0;
+                }
+            } else if (byte == 0x1B) {
+                s_monitor->esc_state = 1;
             } else if (byte == '\b' || byte == 0x7F) {
+                /* A backspace (or DEL) from the far terminal erases the last char of
+                   the echoed line. Drop it from the buffer and re-terminate here so
+                   the displayed pending line (whose cursor position is derived from
+                   its length) actually shrinks. */
                 if (s_monitor->line_index > 0) {
                     s_monitor->line_index--;
+                    s_monitor->line_buffer[s_monitor->line_index] = '\0';
                 }
             } else if (byte == '\t') {
                 const char *spaces = "    ";
@@ -215,7 +239,7 @@ esp_err_t uart_monitor_get_line(char *buffer, size_t max_len, TickType_t wait_ti
                     s_monitor->line_buffer[s_monitor->line_index] = '\0';
                 }
             }
-            /* Ignore other control characters. */
+            /* Ignore other control characters and CSI bytes. */
         }
 
         /* Burst consumed with no terminator yet. */

@@ -648,8 +648,28 @@ void uart_monitor_display_task(void *pvParameter)
         // input back over RX, so the typed command appears on screen there.
         char key;
         while (usb_keyboard_get_key(&key, 0)) {
+            uint8_t k = (uint8_t)key;
+            /* Control bytes are invisible, so name them explicitly to make it clear
+               they were received and forwarded (e.g. <BS> backspace, <ETX> Ctrl+C).
+               Printable characters keep the plain %c form. */
+            if (k < 0x20 || k == 0x7F) {
+                const char *label = "0x00";
+                switch (k) {
+                case 0x03: label = "<ETX>"; break;  /* Ctrl+C  */
+                case 0x04: label = "<EOF>"; break;  /* Ctrl+D  */
+                case 0x08: label = "<BS>";  break;  /* backspace */
+                case 0x09: label = "<TAB>"; break;  /* tab     */
+                case 0x0A: label = "<LF>";  break;  /* enter   */
+                case 0x0D: label = "<CR>";  break;  /* enter   */
+                case 0x15: label = "<KILL>"; break; /* Ctrl+U  */
+                case 0x17: label = "<RV>";   break; /* Ctrl+W  */
+                case 0x1B: label = "<ESC>";  break; /* escape  */
+                }
+                ESP_LOGI(TAG, "TX: %s", label);
+            } else {
+                ESP_LOGI(TAG, "TX: %c", k);
+            }
             uart_monitor_send(&key, 1);
-            ESP_LOGI(TAG, "TX: %c", key);
         }
 
         // The shell prompt (PS1) and any echoed input arrive over RX without a
