@@ -1,6 +1,5 @@
 #include "raylib.h"
 #include "board_init.h"
-#include "esp_raylib_port.h"
 #include "esp_log.h"
 #include "esp_littlefs.h"
 #include "freertos/FreeRTOS.h"
@@ -438,10 +437,9 @@ void uart_monitor_display_task(void *pvParameter)
     uint16_t screenWidth = 320;
     uint16_t screenHeight = 240;
 
-    esp_err_t ret = ray_port_get_dimensions(&screenWidth, &screenHeight);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to get display dimensions, using defaults");
-    }
+    board_init_display_dimensions(&screenWidth, &screenHeight);
+
+    esp_err_t ret;
 
     ESP_LOGI(TAG, "Initializing UART Monitor with display: %dx%d...", screenWidth, screenHeight);
     InitWindow(screenWidth, screenHeight, "UART Monitor");
@@ -729,8 +727,8 @@ void app_main(void)
 {
 ESP_LOGI(TAG, "Initializing ESP32-P4 Graphical Terminal UART Monitor...");
 
-    // Reduce verbosity of ray_port flush messages
-    esp_log_level_set("ray_port", ESP_LOG_WARN);
+    // Reduce verbosity of raylib messages (the ESP-IDF backend logs via this tag)
+    esp_log_level_set("RAYLIB", ESP_LOG_WARN);
 
     // Initialize display hardware
     esp_err_t ret = board_init_display();
