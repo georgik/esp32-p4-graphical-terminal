@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS
-        "hello.c"
+        "terminal.c"
         "board_init.c"
         "uart_monitor.c"
         "usb_keyboard.c"

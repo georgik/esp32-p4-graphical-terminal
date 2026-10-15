@@ -40,8 +40,8 @@ over its serial line: read its output on the display and type commands to it.
 ## Wiring for full-duplex communication
 
 ```
-ESP32-S31 (Linux box)                ESP32-P4 (Expansion Header)
-----------------------------------    --------------------------------
+ESP32-S31 (Linux)       ESP32-P4 (Expansion Header)
+-------------------    --------------------------------
        TX  -------------->  GPIO21 (UART1_RX)
        RX  <--------------  GPIO22 (UART1_TX)
        GND  ---------->     GND
@@ -122,7 +122,7 @@ reflashing the firmware. The `convert_assets.sh` script rasterizes the source SV
 ```
 .
 ├── main/
-│   ├── hello.c              # Main application and display logic
+│   ├── terminal.c              # Main application and display logic
 │   ├── uart_monitor.c       # UART driver implementation
 │   ├── uart_monitor.h       # UART monitor API
 │   ├── usb_keyboard.c       # USB HID host keyboard (full-duplex I/O)
@@ -136,17 +136,6 @@ reflashing the firmware. The `convert_assets.sh` script rasterizes the source SV
 ├── convert_assets.sh        # Asset conversion script
 ├── partitions.csv           # Flash partition table
 └── README.md                # This file
-```
-
-## Console Output Example
-
-```
-I (2075) UARTMonitor: UART Monitor Initialized. Starting main loop...
-I (2085) UARTMonitor: Screen dimensions: 1024x600
-W (103622) usb_keyboard: report_process: key 'l' enqueued
-W (103700) usb_keyboard: report_process: key 's' enqueued
-W (103878) usb_keyboard: report_process: key '\n' enqueued
-I (104238) UARTMonitor: RX: root@esp32s31:~# uname -a
 ```
 
 ## Troubleshooting
