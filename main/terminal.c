@@ -25,6 +25,7 @@
 #define FONT_SIZE 28
 #define LINE_SPACING 34
 #define MARGIN_LEFT 10
+#define MARGIN_RIGHT 10  // Leave this much free space at the right of a line
 #define MARGIN_TOP (STATUS_BAR_HEIGHT + CONTENT_GAP)  // Start below status bar with gap
 #define MARGIN_BOTTOM BOTTOM_BAR_HEIGHT  // Content goes right to bottom bar
 
@@ -169,23 +170,46 @@ static void draw_content_area(int screenWidth, int screenHeight, const line_hist
     if (char_w < 1) char_w = 1;
     int cursor_h = (int)MeasureTextEx(mono_font, "gqljp", FONT_SIZE, 0).y;
 
-    /* Draw committed output, anchored to the bottom of the committed area with the
-     * newest line just above the current one; older lines fall off the top. */
-    int start_row, draw_count, first_logical;
-    if (history->line_count > committed_rows) {
-        first_logical = history->line_count - committed_rows;
-        draw_count = committed_rows;
-        start_row = 0;
-    } else {
-        first_logical = 0;
-        draw_count = history->line_count;
-        start_row = committed_rows - history->line_count;
-    }
+    // Characters that fit on a single row; lines wider than this wrap onto the
+    // next row like a normal terminal instead of running off the right edge.
+    int cols = (screenWidth - MARGIN_LEFT - MARGIN_RIGHT) / char_w;
+    if (cols < 1) cols = 1;
 
-    for (int i = 0; i < draw_count; i++) {
-        const char *line = get_line_from_history(history, first_logical + i);
-        int y = MARGIN_TOP + (start_row + i) * LINE_SPACING;
-        DrawTextEx(mono_font, line, (Vector2){MARGIN_LEFT, y}, FONT_SIZE, 0, GREEN);
+    char temp_seg[LINE_BUFFER_SIZE];
+
+    /* Draw committed output, anchored to the bottom of the committed area with the
+     * newest line just above the current one; older lines fall off the top. Each
+     * logical line may span several physical rows when it is longer than one. */
+    int next_free_row = committed_rows;
+    for (int i = history->line_count - 1; i >= 0; i--) {
+        const char *line = get_line_from_history(history, i);
+        int len = (int)strlen(line);
+        int rows = (len + cols - 1) / cols;  // ceil; 1 for an empty line
+        if (rows == 0) rows = 1;
+
+        int top_row = next_free_row - rows;
+        int draw_rows = rows;
+        if (top_row < 0) {
+            // Line is longer than the whole committed area: show as much of its
+            // beginning as fits and leave the rest no room.
+            top_row = 0;
+            draw_rows = next_free_row;
+            next_free_row = 0;
+        } else {
+            next_free_row = top_row;
+        }
+
+        for (int r = 0; r < draw_rows; r++) {
+            const char *seg = line + r * cols;
+            int seg_len = cols;
+            if ((len - r * cols) < seg_len) seg_len = len - r * cols;
+            if (seg_len > 0) {
+                memcpy(temp_seg, seg, seg_len);
+                temp_seg[seg_len] = '\0';
+                int y = MARGIN_TOP + (top_row + r) * LINE_SPACING;
+                DrawTextEx(mono_font, temp_seg, (Vector2){MARGIN_LEFT, y}, FONT_SIZE, 0, GREEN);
+            }
+        }
     }
 
     /* Current (pending) line, drawn on the bottom row. */
