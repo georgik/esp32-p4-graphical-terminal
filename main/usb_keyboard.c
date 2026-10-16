@@ -157,12 +157,14 @@ static void keyboard_report_process(const hid_keyboard_input_report_boot_t *repo
         }
 
         /* A newly pressed key -> emit its character plus the Ctrl modifier.
-           F5/F6 are intercepted as local font-resize shortcuts and carry no ASCII
-           character, so they are enqueued via their raw usage code regardless. */
+           The display shortcuts F1 (help), F5/F6 (font resize) and F9 (matrix
+           screensaver) carry no ASCII character, but are intercepted by the display
+           task, so they are enqueued via their raw usage code regardless. */
         if (pressed > HID_KEY_ERROR_UNDEFINED && !key_present_in_report(s_prev_keys, pressed)) {
             char c = hid_key_to_ascii(pressed, shift, ctrl);
-            bool is_resize_key = (pressed == HID_KEY_F5 || pressed == HID_KEY_F6);
-            if (s_key_queue != NULL && (c != 0 || is_resize_key)) {
+            bool special_shortcut = (pressed == HID_KEY_F1 || pressed == HID_KEY_F5 ||
+                                     pressed == HID_KEY_F6 || pressed == HID_KEY_F9);
+            if (s_key_queue != NULL && (c != 0 || special_shortcut)) {
                 key_event_t ev = { .ch = c, .ctrl = ctrl, .hid_code = pressed };
                 xQueueSend(s_key_queue, &ev, 0);
                 ESP_LOGV(TAG, "report_process: hid_code=0x%02X ctrl=%d enqueued",
@@ -411,4 +413,14 @@ bool usb_keyboard_font_resize_f5(const key_event_t *event)
 bool usb_keyboard_font_resize_f6(const key_event_t *event)
 {
     return (event != NULL) && (event->hid_code == HID_KEY_F6);
+}
+
+bool usb_keyboard_font_help(const key_event_t *event)
+{
+    return (event != NULL) && (event->hid_code == HID_KEY_F1);
+}
+
+bool usb_keyboard_font_matrix(const key_event_t *event)
+{
+    return (event != NULL) && (event->hid_code == HID_KEY_F9);
 }

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <stdlib.h>
 
 #define TAG "UARTMonitor"
 
@@ -61,6 +62,31 @@ typedef enum {
     HP_STATE_LIGHT_SLEEP, // HP core in light sleep (80% opacity)
     HP_STATE_DEEP_SLEEP   // HP core in deep sleep (50% opacity)
 } hp_core_state_t;
+
+/*
+ * Which full-screen overlay (if any) is drawn over the terminal view. UI_TERMINAL
+ * is the normal live view; the overlays are one-shot shortcuts shown until a key
+ * is pressed again.
+ */
+typedef enum {
+    UI_TERMINAL,  // normal terminal view (live UART output)
+    UI_HELP,      // F1 help / keyboard-shortcut reference
+    UI_MATRIX,    // F9 matrix screensaver (falling characters)
+} ui_mode_t;
+
+/*
+ * A single column of the matrix screensaver. The head (index 0) leads the fall and
+ * the tail trails above it; each column falls at its own rate so the screen fills
+ * unevenly like the original cmatrix.
+ */
+typedef struct {
+    int x;      // column pixel origin (left edge)
+    int pos;    // head y in pixels; increases as the stream falls
+    int speed;  // frames per step (smaller value => faster column)
+    int tick;   // frames elapsed in the current step
+    int len;    // number of glyphs in the column (head + trail)
+    char *chars; // glyphs, index 0 is the head
+} matrix_col;
 
 /**
  * @brief Add a line to the history buffer
@@ -537,6 +563,179 @@ static void draw_startup_screen(int screenWidth, int screenHeight, int baud_rate
     EndDrawing();
 }
 
+/**
+ * @brief Pick a random printable ASCII glyph, cmatrix-style (0x20..0x7F).
+ */
+static char matrix_random_char(void)
+{
+    return (char)(0x20 + (rand() % 0x60));
+}
+
+/**
+ * @brief Seed the matrix-rain column generators. Done once, off the display task.
+ */
+static void matrix_seed_random(void)
+{
+    static bool seeded = false;
+    if (!seeded) {
+        srand((unsigned)(xTaskGetTickCount() ^ 0xA5A5));
+        seeded = true;
+    }
+}
+
+/**
+ * @brief Allocate and fill the falling-column grid. Returns true on success.
+ *
+ * The head of every column starts above the screen at a randomized depth and the
+ * tail is seeded with random glyphs, so streams are staggered from the first frame.
+ */
+static bool matrix_rain_init(matrix_col **out, int *out_cols, int screenWidth, int screenHeight,
+                             float char_w, int char_h, int max_len)
+{
+    if (char_w < 1.f) char_w = 1.f;
+    int cols = (int)(screenWidth / char_w);
+    if (cols < 1) cols = 1;
+
+    matrix_col *rain = calloc((size_t)cols, sizeof(matrix_col));
+    if (rain == NULL) {
+        return false;
+    }
+
+    for (int i = 0; i < cols; i++) {
+        int len = 4 + (rand() % (max_len - 4 > 0 ? max_len - 4 : 1));
+        if (len < 1) len = 1;
+
+        char *chars = malloc((size_t)len);
+        if (chars == NULL) {
+            free(rain);
+            return false;
+        }
+        for (int j = 0; j < len; j++) {
+            chars[j] = matrix_random_char();
+        }
+
+        rain[i].x = (int)((size_t)i * char_w);
+        rain[i].pos = -(rand() % screenHeight);  // start the head above the screen
+        rain[i].speed = 3 + (rand() % 6);         // frames per step
+        rain[i].tick = rand() % rain[i].speed;
+        rain[i].len = len;
+        rain[i].chars = chars;
+    }
+
+    *out_cols = cols;
+    *out = rain;
+    return true;
+}
+
+/**
+ * @brief Free a matrix-rain grid allocated by matrix_rain_init().
+ */
+static void matrix_rain_free(matrix_col *rain, int cols)
+{
+    if (rain == NULL) {
+        return;
+    }
+    for (int i = 0; i < cols; i++) {
+        free(rain[i].chars);
+    }
+    free(rain);
+}
+
+/**
+ * @brief Draw one step of the matrix rain. Assumes the background is already
+ * cleared to BLACK. The head (index 0) is drawn bright; the trail fades from
+ * green toward the top. Each column advances and, once fully off-screen, respawns
+ * with a fresh random trail.
+ */
+static void matrix_rain_frame(matrix_col *rain, int cols, int screenHeight,
+                              Font mono_font, int font_size, float char_w, int char_h)
+{
+    if (char_h < 1) char_h = 1;
+
+    for (int i = 0; i < cols; i++) {
+        matrix_col *c = &rain[i];
+        int len = c->len;
+
+        /* Draw head (bright) then the trail above it, darkest at the top. */
+        for (int j = 0; j < len; j++) {
+            int y = c->pos - j * char_h;
+            if (y < -char_h || y > screenHeight) {
+                continue;
+            }
+            char glyph = c->chars[j];
+            char buf[2] = { glyph, '\0' };
+            Color col;
+            if (j == 0) {
+                col = WHITE;  // head
+            } else {
+                int g = 255 * (len - 1 - j) / (len - 1);
+                if (g < 40) g = 40;  // keep the tail faintly visible
+                col = (Color){0, (uint8_t)g, 0, 255};
+            }
+            DrawTextEx(mono_font, buf, (Vector2){c->x, (int)y}, font_size, 0, col);
+        }
+
+        /* Advance the column one step. */
+        c->tick++;
+        if (c->tick >= c->speed) {
+            c->tick = 0;
+            /* Shift the trail down by one line, spawn a new glyph at the head. */
+            for (int j = len - 1; j > 0; j--) {
+                c->chars[j] = c->chars[j - 1];
+            }
+            c->chars[0] = matrix_random_char();
+            c->pos += char_h;
+
+            /* Once the topmost glyph has left the screen, respawn this column. */
+            if (c->pos - (len - 1) * char_h > screenHeight) {
+                c->pos = -(rand() % screenHeight);
+                for (int j = 0; j < len; j++) {
+                    c->chars[j] = matrix_random_char();
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief Draw the F1 help screen: a centered keyboard-shortcut reference.
+ */
+static void draw_help_screen(int screenWidth, int screenHeight, Font mono_font)
+{
+    const char *title = "UART Monitor - Help";
+    int title_size = 48;
+    int title_w = (int)MeasureTextEx(mono_font, title, title_size, 0).x;
+    DrawTextEx(mono_font, title, (Vector2){(screenWidth - title_w) / 2, 40}, title_size, 0, YELLOW);
+
+    const char *keys[] = {
+        "F1   Help screen (this)",
+        "F5   Shrink font",
+        "F6   Grow font",
+        "F9   Matrix screensaver",
+    };
+    const char *desc[] = {
+        "Show keyboard shortcuts",
+        "Decrease the terminal font size",
+        "Increase the terminal font size",
+        "Fall-and-green screensaver (press any key to exit)",
+    };
+
+    int x = (screenWidth - 520) / 2;
+    int y = 130;
+    int line_h = 60;
+    for (int i = 0; i < 4; i++) {
+        DrawTextEx(mono_font, keys[i], (Vector2){x, y}, 28, 0, (Color){0, 255, 255, 255});
+        DrawTextEx(mono_font, desc[i], (Vector2){x + 240, y}, 22, 0, GRAY);
+        y += line_h;
+    }
+
+    const char *footer = "Press any key to return to the terminal";
+    int footer_size = 20;
+    int footer_w = (int)MeasureTextEx(mono_font, footer, footer_size, 0).x;
+    DrawTextEx(mono_font, footer, (Vector2){(screenWidth - footer_w) / 2, screenHeight - 70},
+               footer_size, 0, GRAY);
+}
+
 void uart_monitor_display_task(void *pvParameter)
 {
     // Query actual display dimensions
@@ -760,22 +959,50 @@ void uart_monitor_display_task(void *pvParameter)
     bool key_pressed;
     hp_core_state_t hp_state = HP_STATE_ACTIVE;  // Default to active state
 
+    // Track how long the UART and keyboard have been quiet so the matrix
+    // screensaver can start automatically after a stretch of inactivity.
+    TickType_t s_last_activity = xTaskGetTickCount();  // reset on any key or RX
+    TickType_t s_idle_timeout = pdMS_TO_TICKS(60000);  // activate after 1 minute
+
+    /* Which overlay is shown (UI_TERMINAL = normal live view). F1/F9 switch between
+       the help screen and the matrix screensaver; any key returns to the terminal. */
+    ui_mode_t ui_mode = UI_TERMINAL;
+    matrix_col *matrix_rain = NULL;
+    int matrix_cols = 0;
+    bool matrix_rain_active = false;
+
     // Main display loop
     while (!WindowShouldClose()) {
         bool got_any_line = false;
         key_pressed = false;
         bool font_resized = false;
 
-        // Drain every complete line (terminated by \r/\n) so it is drawn right away.
-        while (uart_monitor_get_line(temp_line, sizeof(temp_line), 0) == ESP_OK) {
-            handle_rx_line(&history, temp_line, &hp_state);
-            got_any_line = true;
+        // Drain complete lines so live output is drawn right away. While an overlay
+        // is shown we hold the terminal view, so RX is only processed in UI_TERMINAL.
+        if (ui_mode == UI_TERMINAL) {
+            while (uart_monitor_get_line(temp_line, sizeof(temp_line), 0) == ESP_OK) {
+                handle_rx_line(&history, temp_line, &hp_state);
+                got_any_line = true;
+            }
         }
 
         // Forward keystrokes from the USB keyboard to the UART. The remote echoes
         // input back over RX, so the typed command appears on screen there.
         key_event_t key;
         while (usb_keyboard_get_key(&key, 0)) {
+            /* Any key exits an overlay and returns to the normal terminal view.
+               This runs before the F1/F5/F6/F9 shortcuts so a key cannot re-enter
+               or activate an overlay while one is already showing. */
+            if (ui_mode != UI_TERMINAL) {
+                ui_mode = UI_TERMINAL;
+                key_pressed = true;  // force a redraw of the terminal view
+                if (matrix_rain_active) {
+                    matrix_rain_free(matrix_rain, matrix_cols);
+                    matrix_rain_active = false;
+                }
+                continue;
+            }
+
             /* F5/F6 resize the terminal font at runtime. This is a local display
                action, so it is intercepted here and never forwarded to the UART. */
             if (usb_keyboard_font_resize_f5(&key)) {
@@ -799,6 +1026,21 @@ void uart_monitor_display_task(void *pvParameter)
                 ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines",
                          metrics.font_size, metrics.cols, metrics.max_visible_lines);
                 font_resized = true;
+                continue;
+            }
+
+            /* F1 shows the help screen. */
+            if (usb_keyboard_font_help(&key)) {
+                ui_mode = UI_HELP;
+                continue;
+            }
+
+            /* F9 starts the matrix screensaver. */
+            if (usb_keyboard_font_matrix(&key)) {
+                ui_mode = UI_MATRIX;
+                matrix_seed_random();
+                matrix_rain_active = matrix_rain_init(&matrix_rain, &matrix_cols, screenWidth, screenHeight,
+                                                      metrics.char_w, metrics.char_h, MAX_FONT_SIZE);
                 continue;
             }
 
@@ -844,12 +1086,29 @@ void uart_monitor_display_task(void *pvParameter)
         }
         last_rx_count = current_rx_count;
 
+        // Track activity (UART data or any keypress) so the screensaver only
+        // triggers once everything has been quiet for the whole timeout window.
+        if (got_any_line || key_pressed || (current_rx_count != last_rx_count)) {
+            s_last_activity = xTaskGetTickCount();
+        }
+
+        // Once the UART and keyboard have been idle for the timeout, switch to
+        // the matrix screensaver (unless an overlay is already showing).
+        if (ui_mode == UI_TERMINAL &&
+            (xTaskGetTickCount() - s_last_activity) >= s_idle_timeout) {
+            ui_mode = UI_MATRIX;
+            matrix_seed_random();
+            matrix_rain_active = matrix_rain_init(&matrix_rain, &matrix_cols, screenWidth, screenHeight,
+                                                  metrics.char_w, metrics.char_h, MAX_FONT_SIZE);
+        }
+
         // Decide whether the visible screen changed this cycle. Redraw only on
         // change so the display task does not spin at ~1000 fps while streaming
         // (see improvement 04); the frame rate is still capped below regardless.
         bool need_draw = got_any_line || key_pressed || font_resized
-                          || (current_rx_count != last_rx_count)
-                          || pending_changed;
+                           || (current_rx_count != last_rx_count)
+                           || pending_changed
+                           || (ui_mode == UI_MATRIX);  // the matrix screensaver animates continuously
 
         // The only thing that must refresh while idle is the blinking cursor:
         // force a redraw every ~500 ms so the prompt keeps animating.
@@ -872,11 +1131,19 @@ void uart_monitor_display_task(void *pvParameter)
             ClearBackground(BLACK);
         }
 
-        // Draw UI elements
-        draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE, mono_font);
-        draw_content_area(screenWidth, screenHeight, &history, mono_font, pending_line, (int)strlen(pending_line), is_receiving, &metrics);
-        draw_core_visualization(screenWidth, screenHeight, hp_state, hp_active_texture, hp_light_sleep_texture, hp_deep_sleep_texture, lp_core_texture);
-        draw_bottom_bar(screenWidth, screenHeight, uart_monitor_is_receiving(), mono_font);
+        // Draw the active view. Overlays get the whole screen; the terminal keeps
+        // its status bar, content area and visualization.
+        if (ui_mode == UI_MATRIX) {
+            matrix_rain_frame(matrix_rain, matrix_cols, screenHeight,
+                              mono_font, metrics.font_size, metrics.char_w, metrics.char_h);
+        } else if (ui_mode == UI_HELP) {
+            draw_help_screen(screenWidth, screenHeight, mono_font);
+        } else {
+            draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE, mono_font);
+            draw_content_area(screenWidth, screenHeight, &history, mono_font, pending_line, (int)strlen(pending_line), is_receiving, &metrics);
+            draw_core_visualization(screenWidth, screenHeight, hp_state, hp_active_texture, hp_light_sleep_texture, hp_deep_sleep_texture, lp_core_texture);
+            draw_bottom_bar(screenWidth, screenHeight, uart_monitor_is_receiving(), mono_font);
+        }
 
         // End drawing
         EndDrawing();
@@ -910,6 +1177,11 @@ void uart_monitor_display_task(void *pvParameter)
 
     if (mono_loaded) {
         UnloadFont(mono_font);
+    }
+
+    if (matrix_rain_active) {
+        matrix_rain_free(matrix_rain, matrix_cols);
+        matrix_rain_active = false;
     }
 
     uart_monitor_deinit();

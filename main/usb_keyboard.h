@@ -32,8 +32,8 @@ esp_err_t usb_keyboard_init(void);
  *
  * Ctrl+A-Z is reported as the 0x00-0x1F control code (e.g. Ctrl+C => 0x03).
  * `hid_code` carries the raw HID usage code, so callers can detect shortcuts that
- * carry no character (e.g. F5/F6 font resize) instead of forwarding raw bytes to
- * the UART.
+ * carry no character (e.g. F1 help, F5/F6 font resize, F9 matrix) instead of
+ * forwarding raw bytes to the UART.
  */
 typedef struct {
     char ch;      /* character (control code for Ctrl+letter) */
@@ -65,6 +65,22 @@ bool usb_keyboard_font_resize_f5(const key_event_t *event);
  * @return true if the event is the F6 key
  */
 bool usb_keyboard_font_resize_f6(const key_event_t *event);
+
+/**
+ * @brief Detect the F1 help-screen shortcut carried in a keystroke.
+ *
+ * @param event  Keystroke to test (non-NULL required)
+ * @return true if the event is the F1 key
+ */
+bool usb_keyboard_font_help(const key_event_t *event);
+
+/**
+ * @brief Detect the F9 matrix-screensaver shortcut carried in a keystroke.
+ *
+ * @param event  Keystroke to test (non-NULL required)
+ * @return true if the event is the F9 key
+ */
+bool usb_keyboard_font_matrix(const key_event_t *event);
 
 #ifdef __cplusplus
 extern "C" {
