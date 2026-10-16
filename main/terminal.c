@@ -177,18 +177,13 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
     DrawTextEx(mono_font, count_text, (Vector2){screenWidth - count_width - MARGIN_LEFT, 5}, 20, 0, YELLOW);
 }
 
-/**
- * @brief Size the font so COLS_PER_ROW characters fit the usable width, then
- * measure its layout metrics (advance, glyph height, line spacing, columns,
-  * visible line count) at that size. Used at startup and re-run whenever the
-  * font size changes (F5/F6).
- */
-static void p4_display_recompute_metrics(Font mono_font, FontMetrics *m, int screenWidth, int screenHeight)
+/* COLS_PER_ROW characters fit the usable width because the character advance is
+ * proportional to font_size, so the size that places COLS_PER_ROW characters over
+ * the usable width is (usable*baseline)/(COLS_PER_ROW*baseline_w), measured at a
+ * 28 px baseline. Integer rounding of the advance can leave the row one character
+ * short, so shrink by 1 px until 80 columns fit. */
+static void p4_display_size_font_to_fit(Font mono_font, FontMetrics *m, int screenWidth)
 {
-    /* char_w scales linearly with font_size, so the size that places COLS_PER_ROW
-       characters across the usable width is (usable*baseline)/(COLS_PER_ROW*baseline_w).
-       Integer rounding of char_w can leave one character short, so shrink the font
-       until 80 characters fit. */
     const int baseline = 28;
     int baseline_w = (int)MeasureTextEx(mono_font, " ", baseline, 0).x;
     if (baseline_w < 1) baseline_w = 1;
@@ -199,15 +194,35 @@ static void p4_display_recompute_metrics(Font mono_font, FontMetrics *m, int scr
     if (font_size < MIN_FONT_SIZE) font_size = MIN_FONT_SIZE;
 
     for (;;) {
-        m->font_size = font_size;
-        m->char_w = MeasureTextEx(mono_font, " ", font_size, 0).x;
-        if (m->char_w < 1.f) m->char_w = 1.f;
-        m->char_h = (int)MeasureTextEx(mono_font, "gqljp", font_size, 0).y;
-        m->line_spacing = m->char_h + VERTICAL_GAP;
-        m->cols = (int)(usable / m->char_w);
-        if (m->cols >= COLS_PER_ROW || font_size <= MIN_FONT_SIZE) break;
+        int char_w = (int)MeasureTextEx(mono_font, " ", font_size, 0).x;
+        if (char_w < 1) char_w = 1;
+        if ((usable / char_w) >= COLS_PER_ROW || font_size <= MIN_FONT_SIZE) {
+            break;
+        }
         font_size--;
     }
+
+    m->font_size = font_size;
+}
+
+/* Measure layout metrics (advance, glyph height, line spacing, columns, visible
+ * line count) at the current m->font_size. The resize step bumps m->font_size
+ * (clamped to [MIN_FONT_SIZE, MAX_FONT_SIZE]) and then calls this, so the metrics
+ * reflect the font the operator selected rather than the size forced to fit 80
+ * columns. */
+static void p4_display_recompute_metrics(Font mono_font, FontMetrics *m, int screenWidth, int screenHeight)
+{
+    int font_size = m->font_size;
+    if (font_size > MAX_FONT_SIZE) font_size = MAX_FONT_SIZE;
+    if (font_size < MIN_FONT_SIZE) font_size = MIN_FONT_SIZE;
+
+    m->char_w = MeasureTextEx(mono_font, " ", font_size, 0).x;
+    if (m->char_w < 1.f) m->char_w = 1.f;
+    m->char_h = (int)MeasureTextEx(mono_font, "gqljp", font_size, 0).y;
+    m->line_spacing = m->char_h + VERTICAL_GAP;
+    int usable = screenWidth - MARGIN_LEFT - MARGIN_RIGHT;
+    m->cols = (int)(usable / m->char_w);
+    if (m->cols < 1) m->cols = 1;
 
     int available_height = screenHeight - MARGIN_TOP - MARGIN_BOTTOM;
     m->max_visible_lines = available_height / m->line_spacing;
@@ -716,6 +731,7 @@ void uart_monitor_display_task(void *pvParameter)
       // then measure its layout metrics at that size. Recomputed on F5/F6 changes
       // (see improvement 06: metrics are measured once and reused per frame).
       FontMetrics metrics;
+      p4_display_size_font_to_fit(mono_font, &metrics, screenWidth);
       p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
       ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines (F5/F6 to resize)",
                metrics.font_size, metrics.cols, metrics.max_visible_lines);
@@ -762,22 +778,22 @@ void uart_monitor_display_task(void *pvParameter)
         while (usb_keyboard_get_key(&key, 0)) {
             /* F5/F6 resize the terminal font at runtime. This is a local display
                action, so it is intercepted here and never forwarded to the UART. */
-            if (usb_keyboard_font_resize_up(&key)) {
-                if (metrics.font_size < MAX_FONT_SIZE - FONT_STEP) {
-                    metrics.font_size += FONT_STEP;
+            if (usb_keyboard_font_resize_f5(&key)) {
+                if (metrics.font_size > FONT_STEP) {
+                    metrics.font_size -= FONT_STEP;
                 } else {
-                    metrics.font_size = MAX_FONT_SIZE;
+                    metrics.font_size = MIN_FONT_SIZE;
                 }
                 p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
                 ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines",
                          metrics.font_size, metrics.cols, metrics.max_visible_lines);
                 font_resized = true;
                 continue;
-            } else if (usb_keyboard_font_resize_down(&key)) {
-                if (metrics.font_size > FONT_STEP) {
-                    metrics.font_size -= FONT_STEP;
+            } else if (usb_keyboard_font_resize_f6(&key)) {
+                if (metrics.font_size < MAX_FONT_SIZE - FONT_STEP) {
+                    metrics.font_size += FONT_STEP;
                 } else {
-                    metrics.font_size = MIN_FONT_SIZE;
+                    metrics.font_size = MAX_FONT_SIZE;
                 }
                 p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
                 ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines",

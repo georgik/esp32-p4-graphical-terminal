@@ -403,12 +403,12 @@ bool usb_keyboard_get_key(key_event_t *out_event, TickType_t wait_ticks)
     return (xQueueReceive(s_key_queue, out_event, wait_ticks) == pdTRUE);
 }
 
-bool usb_keyboard_font_resize_up(const key_event_t *event)
+bool usb_keyboard_font_resize_f5(const key_event_t *event)
 {
     return (event != NULL) && (event->hid_code == HID_KEY_F5);
 }
 
-bool usb_keyboard_font_resize_down(const key_event_t *event)
+bool usb_keyboard_font_resize_f6(const key_event_t *event)
 {
     return (event != NULL) && (event->hid_code == HID_KEY_F6);
 }

@@ -54,17 +54,17 @@ bool usb_keyboard_get_key(key_event_t *out_event, TickType_t wait_ticks);
  * @brief Detect the F5 font-resize shortcut carried in a keystroke.
  *
  * @param event  Keystroke to test (non-NULL required)
- * @return true if the event is the F5 key (increases the terminal font)
+ * @return true if the event is the F5 key
  */
-bool usb_keyboard_font_resize_up(const key_event_t *event);
+bool usb_keyboard_font_resize_f5(const key_event_t *event);
 
 /**
  * @brief Detect the F6 font-resize shortcut carried in a keystroke.
  *
  * @param event  Keystroke to test (non-NULL required)
- * @return true if the event is the F6 key (decreases the terminal font)
+ * @return true if the event is the F6 key
  */
-bool usb_keyboard_font_resize_down(const key_event_t *event);
+bool usb_keyboard_font_resize_f6(const key_event_t *event);
 
 #ifdef __cplusplus
 extern "C" {
