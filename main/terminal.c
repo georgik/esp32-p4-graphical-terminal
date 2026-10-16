@@ -26,7 +26,7 @@
 #define COLS_PER_ROW 80              // Standard terminal width; font is sized to fit this
 #define MIN_FONT_SIZE 12
 #define MAX_FONT_SIZE 48
-#define FONT_STEP 4                 // px per Ctrl+/- step
+#define FONT_STEP 4                 // px per F5/F6 resize step
 #define VERTICAL_GAP 6              // Vertical whitespace between text lines
 #define TARGET_FPS 60                // Render-on-change cap (see improvement 04)
 #define MARGIN_LEFT 10
@@ -180,8 +180,8 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
 /**
  * @brief Size the font so COLS_PER_ROW characters fit the usable width, then
  * measure its layout metrics (advance, glyph height, line spacing, columns,
- * visible line count) at that size. Used at startup and re-run whenever the
- * runtime font size changes (Ctrl+/-).
+  * visible line count) at that size. Used at startup and re-run whenever the
+  * font size changes (F5/F6).
  */
 static void p4_display_recompute_metrics(Font mono_font, FontMetrics *m, int screenWidth, int screenHeight)
 {
@@ -712,13 +712,13 @@ void uart_monitor_display_task(void *pvParameter)
         }
      }
 
-     // Size the font so 80 characters (a standard terminal) fit the usable width,
-     // then measure its layout metrics at that size. Recomputed on Ctrl+/- changes
-     // (see improvement 06: metrics are measured once and reused per frame).
-     FontMetrics metrics;
-     p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
-     ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines (Ctrl+/- to resize)",
-              metrics.font_size, metrics.cols, metrics.max_visible_lines);
+      // Size the font so 80 characters (a standard terminal) fit the usable width,
+      // then measure its layout metrics at that size. Recomputed on F5/F6 changes
+      // (see improvement 06: metrics are measured once and reused per frame).
+      FontMetrics metrics;
+      p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
+      ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines (F5/F6 to resize)",
+               metrics.font_size, metrics.cols, metrics.max_visible_lines);
 
     // Show startup screen for 2 seconds
     draw_startup_screen(screenWidth, screenHeight, UART_MONITOR_BAUD_RATE,
@@ -760,24 +760,24 @@ void uart_monitor_display_task(void *pvParameter)
         // input back over RX, so the typed command appears on screen there.
         key_event_t key;
         while (usb_keyboard_get_key(&key, 0)) {
-            /* Ctrl+/- resize the terminal font at runtime. This is a local display
+            /* F5/F6 resize the terminal font at runtime. This is a local display
                action, so it is intercepted here and never forwarded to the UART. */
-            if (key.ctrl && key.ch == '-') {
-                if (metrics.font_size > FONT_STEP) {
-                    metrics.font_size -= FONT_STEP;
+            if (usb_keyboard_font_resize_up(&key)) {
+                if (metrics.font_size < MAX_FONT_SIZE - FONT_STEP) {
+                    metrics.font_size += FONT_STEP;
                 } else {
-                    metrics.font_size = MIN_FONT_SIZE;
+                    metrics.font_size = MAX_FONT_SIZE;
                 }
                 p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
                 ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines",
                          metrics.font_size, metrics.cols, metrics.max_visible_lines);
                 font_resized = true;
                 continue;
-            } else if (key.ctrl && key.ch == '+') {
-                if (metrics.font_size < MAX_FONT_SIZE - FONT_STEP) {
-                    metrics.font_size += FONT_STEP;
+            } else if (usb_keyboard_font_resize_down(&key)) {
+                if (metrics.font_size > FONT_STEP) {
+                    metrics.font_size -= FONT_STEP;
                 } else {
-                    metrics.font_size = MAX_FONT_SIZE;
+                    metrics.font_size = MIN_FONT_SIZE;
                 }
                 p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
                 ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines",

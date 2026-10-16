@@ -119,12 +119,13 @@ static char hid_key_to_ascii(uint8_t key, bool shift, bool ctrl)
     case HID_KEY_OPEN_BRACKET:  return shift ? '{' : '[';
     case HID_KEY_CLOSE_BRACKET: return shift ? '}' : ']';
     case HID_KEY_BACK_SLASH: return shift ? '|' : '\\';
-    case HID_KEY_SHARP:    return shift ? '~' : '`';
+    case HID_KEY_SHARP:    return shift ? '|' : '\\';
     case HID_KEY_COLON:    return shift ? ':' : ';';
     case HID_KEY_QUOTE:    return shift ? '"' : '\'';
-    case HID_KEY_TILDE:    return shift ? '<' : ',';
-    case HID_KEY_LESS:     return shift ? '>' : '.';
-    case HID_KEY_GREATER:  return shift ? '?' : '/';
+    case HID_KEY_TILDE:    return shift ? '~' : '`';
+    case HID_KEY_LESS:     return shift ? '<' : ',';
+    case HID_KEY_GREATER:  return shift ? '>' : '.';
+    case HID_KEY_SLASH:    return shift ? '?' : '/';
 
     default:
         return 0;
@@ -155,13 +156,17 @@ static void keyboard_report_process(const hid_keyboard_input_report_boot_t *repo
             continue;
         }
 
-        /* A newly pressed key -> emit its character plus the Ctrl modifier. */
+        /* A newly pressed key -> emit its character plus the Ctrl modifier.
+           F5/F6 are intercepted as local font-resize shortcuts and carry no ASCII
+           character, so they are enqueued via their raw usage code regardless. */
         if (pressed > HID_KEY_ERROR_UNDEFINED && !key_present_in_report(s_prev_keys, pressed)) {
             char c = hid_key_to_ascii(pressed, shift, ctrl);
-            if (c != 0 && s_key_queue != NULL) {
-                key_event_t ev = { .ch = c, .ctrl = ctrl };
+            bool is_resize_key = (pressed == HID_KEY_F5 || pressed == HID_KEY_F6);
+            if (s_key_queue != NULL && (c != 0 || is_resize_key)) {
+                key_event_t ev = { .ch = c, .ctrl = ctrl, .hid_code = pressed };
                 xQueueSend(s_key_queue, &ev, 0);
-                ESP_LOGV(TAG, "report_process: key '%c'(%d) ctrl=%d enqueued", c, (int)c, ctrl ? 1 : 0);
+                ESP_LOGV(TAG, "report_process: hid_code=0x%02X ctrl=%d enqueued",
+                         (int)pressed, ctrl ? 1 : 0);
             }
         }
     }
@@ -396,4 +401,14 @@ bool usb_keyboard_get_key(key_event_t *out_event, TickType_t wait_ticks)
         return false;
     }
     return (xQueueReceive(s_key_queue, out_event, wait_ticks) == pdTRUE);
+}
+
+bool usb_keyboard_font_resize_up(const key_event_t *event)
+{
+    return (event != NULL) && (event->hid_code == HID_KEY_F5);
+}
+
+bool usb_keyboard_font_resize_down(const key_event_t *event)
+{
+    return (event != NULL) && (event->hid_code == HID_KEY_F6);
 }

@@ -11,6 +11,7 @@
 #define USB_KEYBOARD_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,13 +30,15 @@ esp_err_t usb_keyboard_init(void);
 /**
  * @brief One keystroke: the character plus the Ctrl modifier that was held.
  *
- * Ctrl+A-Z is reported as the 0x00-0x1F control code (e.g. Ctrl+C => 0x03). The
- * Ctrl flag is kept so callers can intercept shortcuts (e.g. Ctrl+/- font resize)
- * instead of forwarding the raw byte to the UART.
+ * Ctrl+A-Z is reported as the 0x00-0x1F control code (e.g. Ctrl+C => 0x03).
+ * `hid_code` carries the raw HID usage code, so callers can detect shortcuts that
+ * carry no character (e.g. F5/F6 font resize) instead of forwarding raw bytes to
+ * the UART.
  */
 typedef struct {
-    char ch;  /* character (control code for Ctrl+letter)  */
-    bool ctrl; /* Ctrl was held when the key was pressed  */
+    char ch;      /* character (control code for Ctrl+letter) */
+    bool ctrl;    /* Ctrl was held when the key was pressed   */
+    uint8_t hid_code; /* raw HID usage code of the pressed key  */
 } key_event_t;
 
 /**
@@ -46,6 +49,22 @@ typedef struct {
  * @return true if a keystroke was retrieved, false otherwise
  */
 bool usb_keyboard_get_key(key_event_t *out_event, TickType_t wait_ticks);
+
+/**
+ * @brief Detect the F5 font-resize shortcut carried in a keystroke.
+ *
+ * @param event  Keystroke to test (non-NULL required)
+ * @return true if the event is the F5 key (increases the terminal font)
+ */
+bool usb_keyboard_font_resize_up(const key_event_t *event);
+
+/**
+ * @brief Detect the F6 font-resize shortcut carried in a keystroke.
+ *
+ * @param event  Keystroke to test (non-NULL required)
+ * @return true if the event is the F6 key (decreases the terminal font)
+ */
+bool usb_keyboard_font_resize_down(const key_event_t *event);
 
 #ifdef __cplusplus
 extern "C" {
