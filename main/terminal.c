@@ -28,6 +28,15 @@
 #define MIN_FONT_SIZE 12
 #define MAX_FONT_SIZE 48
 #define FONT_STEP 4                 // px per F5/F6 resize step
+
+/* Matrix screensaver knobs (tune on HW). Render work scales with cols x trail
+ * length, and trail length dominates the frame cost, so shorter trails give a
+ * much bigger speed-up here than tweaking the fall interval. Smaller
+ * MATRIX_*_STEP => columns advance in more frames => faster fall. */
+#define MATRIX_MIN_TRAIL 4
+#define MATRIX_MAX_TRAIL 16
+#define MATRIX_MIN_STEP 1
+#define MATRIX_MAX_STEP 5
 #define VERTICAL_GAP 6              // Vertical whitespace between text lines
 #define TARGET_FPS 60                // Render-on-change cap (see improvement 04)
 #define MARGIN_LEFT 10
@@ -590,7 +599,7 @@ static void matrix_seed_random(void)
  * tail is seeded with random glyphs, so streams are staggered from the first frame.
  */
 static bool matrix_rain_init(matrix_col **out, int *out_cols, int screenWidth, int screenHeight,
-                             float char_w, int char_h, int max_len)
+                             float char_w, int char_h)
 {
     if (char_w < 1.f) char_w = 1.f;
     int cols = (int)(screenWidth / char_w);
@@ -602,7 +611,7 @@ static bool matrix_rain_init(matrix_col **out, int *out_cols, int screenWidth, i
     }
 
     for (int i = 0; i < cols; i++) {
-        int len = 4 + (rand() % (max_len - 4 > 0 ? max_len - 4 : 1));
+        int len = MATRIX_MIN_TRAIL + (rand() % (MATRIX_MAX_TRAIL - MATRIX_MIN_TRAIL + 1));
         if (len < 1) len = 1;
 
         char *chars = malloc((size_t)len);
@@ -616,7 +625,7 @@ static bool matrix_rain_init(matrix_col **out, int *out_cols, int screenWidth, i
 
         rain[i].x = (int)((size_t)i * char_w);
         rain[i].pos = -(rand() % screenHeight);  // start the head above the screen
-        rain[i].speed = 3 + (rand() % 6);         // frames per step
+        rain[i].speed = MATRIX_MIN_STEP + (rand() % (MATRIX_MAX_STEP - MATRIX_MIN_STEP + 1));
         rain[i].tick = rand() % rain[i].speed;
         rain[i].len = len;
         rain[i].chars = chars;
@@ -972,7 +981,24 @@ void uart_monitor_display_task(void *pvParameter)
     bool matrix_rain_active = false;
 
     // Main display loop
+    static TickType_t s_frame_start = 0;
+    static TickType_t s_fps_last = 0;
+    static int s_fps_frames = 0;
     while (!WindowShouldClose()) {
+        if (s_frame_start == 0) {
+            s_frame_start = xTaskGetTickCount();
+            s_fps_last = s_frame_start;
+            s_fps_frames = frame_counter;
+        }
+        if (ui_mode == UI_MATRIX && s_fps_last != 0
+            && (xTaskGetTickCount() - s_fps_last) >= pdMS_TO_TICKS(1000)) {
+            int elapsed_ms = (int)(xTaskGetTickCount() - s_fps_last) / portTICK_PERIOD_MS;
+            int fps = (frame_counter - s_fps_frames) * 1000 / elapsed_ms;
+            int frame_ms = elapsed_ms / (frame_counter - s_fps_frames);
+            ESP_LOGI(TAG, "Matrix diag: %d fps, %d ms/frame", fps, frame_ms);
+            s_fps_last = xTaskGetTickCount();
+            s_fps_frames = frame_counter;
+        }
         bool got_any_line = false;
         key_pressed = false;
         bool font_resized = false;
@@ -1039,8 +1065,8 @@ void uart_monitor_display_task(void *pvParameter)
             if (usb_keyboard_font_matrix(&key)) {
                 ui_mode = UI_MATRIX;
                 matrix_seed_random();
-                matrix_rain_active = matrix_rain_init(&matrix_rain, &matrix_cols, screenWidth, screenHeight,
-                                                      metrics.char_w, metrics.char_h, MAX_FONT_SIZE);
+                 matrix_rain_active = matrix_rain_init(&matrix_rain, &matrix_cols, screenWidth, screenHeight,
+                                                       metrics.char_w, metrics.char_h);
                 continue;
             }
 
@@ -1099,7 +1125,7 @@ void uart_monitor_display_task(void *pvParameter)
             ui_mode = UI_MATRIX;
             matrix_seed_random();
             matrix_rain_active = matrix_rain_init(&matrix_rain, &matrix_cols, screenWidth, screenHeight,
-                                                  metrics.char_w, metrics.char_h, MAX_FONT_SIZE);
+                                                   metrics.char_w, metrics.char_h);
         }
 
         // Decide whether the visible screen changed this cycle. Redraw only on
