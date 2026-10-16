@@ -155,12 +155,13 @@ static void keyboard_report_process(const hid_keyboard_input_report_boot_t *repo
             continue;
         }
 
-        /* A newly pressed key -> emit its character. */
+        /* A newly pressed key -> emit its character plus the Ctrl modifier. */
         if (pressed > HID_KEY_ERROR_UNDEFINED && !key_present_in_report(s_prev_keys, pressed)) {
             char c = hid_key_to_ascii(pressed, shift, ctrl);
             if (c != 0 && s_key_queue != NULL) {
-                xQueueSend(s_key_queue, &c, 0);
-                ESP_LOGV(TAG, "report_process: key '%c'(%d) enqueued", c, (int)c);
+                key_event_t ev = { .ch = c, .ctrl = ctrl };
+                xQueueSend(s_key_queue, &ev, 0);
+                ESP_LOGV(TAG, "report_process: key '%c'(%d) ctrl=%d enqueued", c, (int)c, ctrl ? 1 : 0);
             }
         }
     }
@@ -375,7 +376,7 @@ esp_err_t usb_keyboard_init(void)
         return ESP_FAIL;
     }
 
-    s_key_queue = xQueueCreate(USB_KEYBOARD_QUEUE_ITEMS, sizeof(char));
+    s_key_queue = xQueueCreate(USB_KEYBOARD_QUEUE_ITEMS, sizeof(key_event_t));
     if (s_key_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create keyboard queue");
         hid_host_uninstall();
@@ -389,10 +390,10 @@ esp_err_t usb_keyboard_init(void)
     return ESP_OK;
 }
 
-bool usb_keyboard_get_key(char *out_char, TickType_t wait_ticks)
+bool usb_keyboard_get_key(key_event_t *out_event, TickType_t wait_ticks)
 {
-    if (s_key_queue == NULL || out_char == NULL) {
+    if (out_event == NULL) {
         return false;
     }
-    return (xQueueReceive(s_key_queue, out_char, wait_ticks) == pdTRUE);
+    return (xQueueReceive(s_key_queue, out_event, wait_ticks) == pdTRUE);
 }

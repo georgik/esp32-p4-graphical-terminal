@@ -27,13 +27,25 @@ extern "C" {
 esp_err_t usb_keyboard_init(void);
 
 /**
- * @brief Fetch one pending keystroke character.
+ * @brief One keystroke: the character plus the Ctrl modifier that was held.
  *
- * @param out_char          Buffer to store the character (non-NULL required)
- * @param wait_ticks        Wait time, e.g. portMAX_DELAY or 0 for non-blocking
- * @return true if a character was retrieved, false otherwise
+ * Ctrl+A-Z is reported as the 0x00-0x1F control code (e.g. Ctrl+C => 0x03). The
+ * Ctrl flag is kept so callers can intercept shortcuts (e.g. Ctrl+/- font resize)
+ * instead of forwarding the raw byte to the UART.
  */
-bool usb_keyboard_get_key(char *out_char, TickType_t wait_ticks);
+typedef struct {
+    char ch;  /* character (control code for Ctrl+letter)  */
+    bool ctrl; /* Ctrl was held when the key was pressed  */
+} key_event_t;
+
+/**
+ * @brief Fetch one pending keystroke.
+ *
+ * @param out_event         Buffer to store the keystroke (non-NULL required)
+ * @param wait_ticks        Wait time, e.g. portMAX_DELAY or 0 for non-blocking
+ * @return true if a keystroke was retrieved, false otherwise
+ */
+bool usb_keyboard_get_key(key_event_t *out_event, TickType_t wait_ticks);
 
 #ifdef __cplusplus
 extern "C" {

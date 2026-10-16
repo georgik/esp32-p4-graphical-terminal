@@ -1,5 +1,6 @@
 #include "raylib.h"
 #include "board_init.h"
+#include "ppa_support.h"
 #include "esp_log.h"
 #include "esp_littlefs.h"
 #include "freertos/FreeRTOS.h"
@@ -22,8 +23,11 @@
 #define STATUS_BAR_HEIGHT 30         // Fits 20px font + padding
 #define BOTTOM_BAR_HEIGHT 24         // Fits 18px font + padding
 #define CONTENT_GAP 2                // Black gap above content only
-#define FONT_SIZE 28
-#define LINE_SPACING 34
+#define COLS_PER_ROW 80              // Standard terminal width; font is sized to fit this
+#define MIN_FONT_SIZE 12
+#define MAX_FONT_SIZE 48
+#define FONT_STEP 4                 // px per Ctrl+/- step
+#define VERTICAL_GAP 6              // Vertical whitespace between text lines
 #define TARGET_FPS 60                // Render-on-change cap (see improvement 04)
 #define MARGIN_LEFT 10
 #define MARGIN_RIGHT 10  // Leave this much free space at the right of a line
@@ -34,8 +38,14 @@
  * are measured once at startup and reused instead of calling MeasureTextEx() per
  * frame (see improvement 06). */
 typedef struct {
-    int char_w;   // fixed character advance (MeasureTextEx " ")
-    int char_h;   // glyph height            (MeasureTextEx "gqljp" .y)
+    int font_size;          // glyph size in px
+    float char_w;           // per-character advance in px (fractional: DrawTextEx
+                            // positions glyphs by this, so the cursor must use it
+                            // too instead of a rounded value)
+    int char_h;             // glyph height            (MeasureTextEx "gqljp" .y)
+    int line_spacing;       // vertical distance between line baselines
+    int cols;               // characters that fit on one row
+    int max_visible_lines;  // committed lines that fit vertically
 } FontMetrics;
 
 /* Line history buffer */
@@ -133,7 +143,9 @@ static void handle_rx_line(line_history_t *history, char *line, hp_core_state_t 
 static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count, int baud_rate, Font mono_font)
 {
     // Background
-    DrawRectangle(0, 0, screenWidth, STATUS_BAR_HEIGHT, DARKBLUE);
+    if (!ppa_fill(0, 0, screenWidth, STATUS_BAR_HEIGHT, DARKBLUE)) {
+        DrawRectangle(0, 0, screenWidth, STATUS_BAR_HEIGHT, DARKBLUE);
+    }
 
     // Title
     DrawTextEx(mono_font, "P4 Graphical Terminal", (Vector2){MARGIN_LEFT, 5}, 20, 0, WHITE);
@@ -166,14 +178,50 @@ static void draw_status_bar(int screenWidth, int screenHeight, uint32_t rx_count
 }
 
 /**
- * @brief Draw the main content area with UART lines
+ * @brief Size the font so COLS_PER_ROW characters fit the usable width, then
+ * measure its layout metrics (advance, glyph height, line spacing, columns,
+ * visible line count) at that size. Used at startup and re-run whenever the
+ * runtime font size changes (Ctrl+/-).
+ */
+static void p4_display_recompute_metrics(Font mono_font, FontMetrics *m, int screenWidth, int screenHeight)
+{
+    /* char_w scales linearly with font_size, so the size that places COLS_PER_ROW
+       characters across the usable width is (usable*baseline)/(COLS_PER_ROW*baseline_w).
+       Integer rounding of char_w can leave one character short, so shrink the font
+       until 80 characters fit. */
+    const int baseline = 28;
+    int baseline_w = (int)MeasureTextEx(mono_font, " ", baseline, 0).x;
+    if (baseline_w < 1) baseline_w = 1;
+
+    int usable = screenWidth - MARGIN_LEFT - MARGIN_RIGHT;
+    int font_size = (usable * baseline) / (COLS_PER_ROW * baseline_w);
+    if (font_size > MAX_FONT_SIZE) font_size = MAX_FONT_SIZE;
+    if (font_size < MIN_FONT_SIZE) font_size = MIN_FONT_SIZE;
+
+    for (;;) {
+        m->font_size = font_size;
+        m->char_w = MeasureTextEx(mono_font, " ", font_size, 0).x;
+        if (m->char_w < 1.f) m->char_w = 1.f;
+        m->char_h = (int)MeasureTextEx(mono_font, "gqljp", font_size, 0).y;
+        m->line_spacing = m->char_h + VERTICAL_GAP;
+        m->cols = (int)(usable / m->char_w);
+        if (m->cols >= COLS_PER_ROW || font_size <= MIN_FONT_SIZE) break;
+        font_size--;
+    }
+
+    int available_height = screenHeight - MARGIN_TOP - MARGIN_BOTTOM;
+    m->max_visible_lines = available_height / m->line_spacing;
+    if (m->max_visible_lines < 1) m->max_visible_lines = 1;
+}
+
+/**
+ * @brief Draw the content area (output lines + current prompt line)
  */
 static void draw_content_area(int screenWidth, int screenHeight, const line_history_t *history, Font mono_font,
                                 const char *cur_line, int cur_len, bool is_receiving, const FontMetrics *m)
 {
     // Content area: left half of screen (50%)
-    int available_height = screenHeight - MARGIN_TOP - MARGIN_BOTTOM;
-    int max_visible_lines = available_height / LINE_SPACING;
+    int max_visible_lines = m->max_visible_lines;
     if (max_visible_lines < 1) {
         return;
     }
@@ -183,13 +231,12 @@ static void draw_content_area(int screenWidth, int screenHeight, const line_hist
     int bottom_row = max_visible_lines - 1;
     int committed_rows = bottom_row;
 
-    int char_w = m->char_w;
+    float char_w = m->char_w;
     int cursor_h = m->char_h;
 
     // Characters that fit on a single row; lines wider than this wrap onto the
     // next row like a normal terminal instead of running off the right edge.
-    int cols = (screenWidth - MARGIN_LEFT - MARGIN_RIGHT) / char_w;
-    if (cols < 1) cols = 1;
+    int cols = m->cols;
 
     char temp_seg[LINE_BUFFER_SIZE];
 
@@ -222,30 +269,30 @@ static void draw_content_area(int screenWidth, int screenHeight, const line_hist
             if (seg_len > 0) {
                 memcpy(temp_seg, seg, seg_len);
                 temp_seg[seg_len] = '\0';
-                int y = MARGIN_TOP + (top_row + r) * LINE_SPACING;
-                DrawTextEx(mono_font, temp_seg, (Vector2){MARGIN_LEFT, y}, FONT_SIZE, 0, GREEN);
+                int y = MARGIN_TOP + (top_row + r) * m->line_spacing;
+                DrawTextEx(mono_font, temp_seg, (Vector2){MARGIN_LEFT, y}, m->font_size, 0, GREEN);
             }
         }
     }
 
     /* Current (pending) line, drawn on the bottom row. */
-    int echo_y = MARGIN_TOP + bottom_row * LINE_SPACING;
-    DrawTextEx(mono_font, cur_line, (Vector2){MARGIN_LEFT, echo_y}, FONT_SIZE, 0, GREEN);
+    int echo_y = MARGIN_TOP + bottom_row * m->line_spacing;
+    DrawTextEx(mono_font, cur_line, (Vector2){MARGIN_LEFT, echo_y}, m->font_size, 0, GREEN);
 
     /* Rectangle cursor at the position after the last character. Solid while
      * receiving, blinking otherwise. */
-    int cursor_x = MARGIN_LEFT + cur_len * char_w;
-    static float cursor_toggle = 0.f;
-    bool cursor_visible;
-    if (is_receiving) {
-        cursor_visible = true;
-    } else {
-        if (cursor_toggle == 0.f) cursor_toggle = GetTime();
-        cursor_visible = (((uint32_t)((GetTime() - cursor_toggle) * 2u)) % 2u) == 0;
-    }
-    if (cursor_visible) {
-        DrawRectangle(cursor_x, echo_y, char_w, cursor_h, WHITE);
-    }
+     int cursor_x = MARGIN_LEFT + (int)(cur_len * char_w);
+     static float cursor_toggle = 0.f;
+     bool cursor_visible;
+     if (is_receiving) {
+         cursor_visible = true;
+     } else {
+         if (cursor_toggle == 0.f) cursor_toggle = GetTime();
+         cursor_visible = (((uint32_t)((GetTime() - cursor_toggle) * 2u)) % 2u) == 0;
+     }
+     if (cursor_visible) {
+         DrawRectangle(cursor_x, echo_y, (int)char_w, cursor_h, WHITE);
+     }
 }
 
 /**
@@ -256,7 +303,9 @@ static void draw_bottom_bar(int screenWidth, int screenHeight, bool is_receiving
     int y = screenHeight - BOTTOM_BAR_HEIGHT;
 
     // Background
-    DrawRectangle(0, y, screenWidth, BOTTOM_BAR_HEIGHT, DARKGRAY);
+    if (!ppa_fill(0, y, screenWidth, BOTTOM_BAR_HEIGHT, DARKGRAY)) {
+        DrawRectangle(0, y, screenWidth, BOTTOM_BAR_HEIGHT, DARKGRAY);
+    }
 
     // Status text - board-specific
 #ifdef CONFIG_BOARD_ESP32_P4_FUNCTION_EV
@@ -422,7 +471,9 @@ static void draw_core_visualization(int screenWidth, int screenHeight, hp_core_s
 static void draw_startup_screen(int screenWidth, int screenHeight, int baud_rate, int rx_pin, int tx_pin, Font mono_font)
 {
     BeginDrawing();
-    ClearBackground(BLACK);
+    if (!ppa_fill(0, 0, screenWidth, screenHeight, BLACK)) {
+        ClearBackground(BLACK);
+    }
 
     // Title - scale with screen size
     const char *title = "UART Monitor";
@@ -483,6 +534,15 @@ void uart_monitor_display_task(void *pvParameter)
 
     ESP_LOGI(TAG, "Initializing UART Monitor with display: %dx%d...", screenWidth, screenHeight);
     InitWindow(screenWidth, screenHeight, "UART Monitor");
+
+    // Initialize PPA hardware-acceleration fill support. Falls back to the CPU
+    // raylib draw path if the software-renderer framebuffer is not PPA-capable.
+    esp_err_t ppa_ret = ppa_support_init();
+    if (ppa_ret == ESP_OK) {
+        ESP_LOGI(TAG, "PPA hardware-acceleration fill support active");
+    } else {
+        ESP_LOGW(TAG, "PPA fill support unavailable (%s); using CPU raylib draw fallback", esp_err_to_name(ppa_ret));
+    }
 
     // Initialize and mount LittleFS
     ESP_LOGI(TAG, "Initializing LittleFS...");
@@ -639,7 +699,7 @@ void uart_monitor_display_task(void *pvParameter)
         FILE *fp = fopen(mono_path, "r");
         if (fp) {
             fclose(fp);
-            Font loaded = LoadFontEx(mono_path, FONT_SIZE, NULL, 0);
+            Font loaded = LoadFontEx(mono_path, MAX_FONT_SIZE, NULL, 0);
             if (loaded.glyphCount > 0) {
                 mono_font = loaded;
                 mono_loaded = true;
@@ -652,12 +712,13 @@ void uart_monitor_display_task(void *pvParameter)
         }
      }
 
-    // Measure font metrics once; the monospace font has fixed advance/glyph
-    // sizes, so these are reused everywhere instead of MeasureTextEx() per frame.
-    FontMetrics metrics;
-    metrics.char_w = (int)MeasureTextEx(mono_font, " ", FONT_SIZE, 0).x;
-    if (metrics.char_w < 1) metrics.char_w = 1;
-    metrics.char_h = (int)MeasureTextEx(mono_font, "gqljp", FONT_SIZE, 0).y;
+     // Size the font so 80 characters (a standard terminal) fit the usable width,
+     // then measure its layout metrics at that size. Recomputed on Ctrl+/- changes
+     // (see improvement 06: metrics are measured once and reused per frame).
+     FontMetrics metrics;
+     p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
+     ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines (Ctrl+/- to resize)",
+              metrics.font_size, metrics.cols, metrics.max_visible_lines);
 
     // Show startup screen for 2 seconds
     draw_startup_screen(screenWidth, screenHeight, UART_MONITOR_BAUD_RATE,
@@ -687,6 +748,7 @@ void uart_monitor_display_task(void *pvParameter)
     while (!WindowShouldClose()) {
         bool got_any_line = false;
         key_pressed = false;
+        bool font_resized = false;
 
         // Drain every complete line (terminated by \r/\n) so it is drawn right away.
         while (uart_monitor_get_line(temp_line, sizeof(temp_line), 0) == ESP_OK) {
@@ -696,10 +758,36 @@ void uart_monitor_display_task(void *pvParameter)
 
         // Forward keystrokes from the USB keyboard to the UART. The remote echoes
         // input back over RX, so the typed command appears on screen there.
-        char key;
+        key_event_t key;
         while (usb_keyboard_get_key(&key, 0)) {
+            /* Ctrl+/- resize the terminal font at runtime. This is a local display
+               action, so it is intercepted here and never forwarded to the UART. */
+            if (key.ctrl && key.ch == '-') {
+                if (metrics.font_size > FONT_STEP) {
+                    metrics.font_size -= FONT_STEP;
+                } else {
+                    metrics.font_size = MIN_FONT_SIZE;
+                }
+                p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
+                ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines",
+                         metrics.font_size, metrics.cols, metrics.max_visible_lines);
+                font_resized = true;
+                continue;
+            } else if (key.ctrl && key.ch == '+') {
+                if (metrics.font_size < MAX_FONT_SIZE - FONT_STEP) {
+                    metrics.font_size += FONT_STEP;
+                } else {
+                    metrics.font_size = MAX_FONT_SIZE;
+                }
+                p4_display_recompute_metrics(mono_font, &metrics, screenWidth, screenHeight);
+                ESP_LOGI(TAG, "Font: %d px, %d cols, %d lines",
+                         metrics.font_size, metrics.cols, metrics.max_visible_lines);
+                font_resized = true;
+                continue;
+            }
+
             key_pressed = true;
-            uint8_t k = (uint8_t)key;
+            uint8_t k = (uint8_t)key.ch;
             /* Control bytes are invisible, so name them explicitly to make it clear
                they were received and forwarded (e.g. <BS> backspace, <ETX> Ctrl+C).
                Printable characters keep the plain %c form. */
@@ -720,7 +808,7 @@ void uart_monitor_display_task(void *pvParameter)
             } else {
                 ESP_LOGI(TAG, "TX: %c", k);
             }
-            uart_monitor_send(&key, 1);
+            uart_monitor_send(&key.ch, 1);
         }
 
         // The shell prompt (PS1) and any echoed input arrive over RX without a
@@ -743,9 +831,9 @@ void uart_monitor_display_task(void *pvParameter)
         // Decide whether the visible screen changed this cycle. Redraw only on
         // change so the display task does not spin at ~1000 fps while streaming
         // (see improvement 04); the frame rate is still capped below regardless.
-        bool need_draw = got_any_line || key_pressed
-                         || (current_rx_count != last_rx_count)
-                         || pending_changed;
+        bool need_draw = got_any_line || key_pressed || font_resized
+                          || (current_rx_count != last_rx_count)
+                          || pending_changed;
 
         // The only thing that must refresh while idle is the blinking cursor:
         // force a redraw every ~500 ms so the prompt keeps animating.
@@ -764,7 +852,9 @@ void uart_monitor_display_task(void *pvParameter)
         BeginDrawing();
 
         // Clear background
-        ClearBackground(BLACK);
+        if (!ppa_fill(0, 0, screenWidth, screenHeight, BLACK)) {
+            ClearBackground(BLACK);
+        }
 
         // Draw UI elements
         draw_status_bar(screenWidth, screenHeight, current_rx_count, UART_MONITOR_BAUD_RATE, mono_font);

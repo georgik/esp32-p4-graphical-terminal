@@ -4,12 +4,14 @@ idf_component_register(
         "board_init.c"
         "uart_monitor.c"
         "usb_keyboard.c"
+        "ppa_support.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         raylib
         esp_lcd
         esp_driver_uart
         littlefs
+        esp_driver_ppa
         # USB HID host driver for keyboard input
         usb_host_hid
 )
